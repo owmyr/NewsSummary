@@ -5,12 +5,11 @@ from dotenv import load_dotenv
 from MyNews import get_top_story_urls, scrape_article_content # Corrected import name
 from email_sender import send_summary_email
 
-# --- CONFIGURATION ---
+# --- CONFIG
 NEWS_LIMIT = 5
 OUTPUT_FILENAME = "daily_news_summary.json"
 
 def initialize_ai():
-    """Loads API key and configures the Generative AI model."""
     load_dotenv()
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
@@ -19,8 +18,8 @@ def initialize_ai():
     model = genai.GenerativeModel('gemini-2.5-flash') # Updated to a strong model
     return model
 
+
 def get_ai_summary(model, content):
-    """Generates a summary for the given content using the AI model."""
     if not content or content == "Could not find article content.":
         return "Could not generate summary because article content was empty."
 
@@ -42,7 +41,6 @@ def get_ai_summary(model, content):
         return "Summary generation failed."
 
 def main():
-    """Main function to run the news summarization process."""
     print("🚀 Starting the daily news summarizer...")
     
     try:
@@ -51,14 +49,14 @@ def main():
         print(f"❌ CONFIGURATION ERROR: {e}")
         return
 
-    # Step 1: Get the URLs of the top stories
+    # Get the URLs of the top stories
     article_urls = get_top_story_urls(limit=NEWS_LIMIT)
 
     if not article_urls:
         print("Could not fetch any article URLs. Exiting.")
         return
 
-    # Step 2: Loop through each URL, scrape, and summarize
+    # Loop URLs, scrape, and summarize
     all_summaries = []
     for i, url in enumerate(article_urls, 1):
         print(f"\n--- Processing article {i}/{len(article_urls)} ---")
@@ -83,7 +81,7 @@ def main():
             "url": article_data['url']
         })
 
-    # Step 3: Save the consolidated summaries to a new JSON file
+    # JSON save
     if all_summaries:
         print("\nSaving all summaries to JSON file...")
         with open(OUTPUT_FILENAME, "w", encoding="utf-8") as f:
@@ -92,7 +90,7 @@ def main():
     else:
         print("⚠️ No summaries were generated.")
         
-    # Step 4: Send the email
+    # email
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
     recipient_email = os.getenv("RECIPIENT_EMAIL")

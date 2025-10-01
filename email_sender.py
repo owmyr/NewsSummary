@@ -8,7 +8,8 @@ import datetime
 
 def format_html_body(summaries):
     """Formats the list of summaries into a clean HTML email body."""
-    # Start with a simple header
+    
+    # Header
     html = """
     <html>
       <head>
@@ -25,7 +26,7 @@ def format_html_body(summaries):
         <h1>Your Daily News Summary</h1>
     """
 
-    # Add each article summary
+    # Article summaries
     if not summaries:
         html += "<p>No news summaries were generated today.</p>"
     else:
@@ -54,15 +55,6 @@ def format_html_body(summaries):
     return html
 
 def send_summary_email(summaries, sender_email, sender_password, recipient_email):
-    """
-    Sends the formatted news summaries to the recipient's email address.
-
-    Args:
-        summaries (list): A list of dictionaries, each containing 'title', 'summary', and 'url'.
-        sender_email (str): The email address to send from.
-        sender_password (str): The App Password for the sender's email account.
-        recipient_email (str): The email address of the recipient.
-    """
     # Create the email message object
     message = MIMEMultipart("alternative")
     today_str = datetime.date.today().strftime('%B %d, %Y')
@@ -79,7 +71,6 @@ def send_summary_email(summaries, sender_email, sender_password, recipient_email
 
     # Try to connect to the server and send the email
     try:
-        # We'll use Gmail's SMTP server as an example
         smtp_server = "smtp.gmail.com"
         port = 465  # For SSL
         

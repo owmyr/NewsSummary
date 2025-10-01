@@ -1,10 +1,8 @@
-# .github/workflows/daily-summary.yml
 name: Daily News Summary
 
 on:
   schedule:
     # Runs at 09:00 UTC every day (6 AM in São Paulo)
-    # You can customize this using crontab syntax.
     - cron: '0 9 * * *'
   workflow_dispatch: # Allows you to run it manually from the Actions tab
 
@@ -33,5 +31,3 @@ jobs:
               SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
               RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         run: python main.py
-
-      # (Future step will be to commit the JSON file or send the email here)
