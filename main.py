@@ -2,7 +2,7 @@ import os
 import json
 import google.generativeai as genai
 from dotenv import load_dotenv
-from MyNews import get_top_story_urls, scrape_article_content # Corrected import name
+from MyNews import get_top_story_urls, scrape_article_content
 from email_sender import send_summary_email
 
 # --- CONFIG
@@ -15,7 +15,7 @@ def initialize_ai():
     if not api_key:
         raise ValueError("GOOGLE_API_KEY not found in environment variables.")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash') # Updated to a strong model
+    model = genai.GenerativeModel('gemini-2.5-flash')
     return model
 
 
