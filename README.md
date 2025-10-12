@@ -1,23 +1,36 @@
-# 🚀 BBC News AI Summarizer
-
-This project is a simple script that automatically scrapes the top stories from BBC News, uses Google's AI to create a short summary for each, and then emails you a daily digest everyday.
+# 🚀 BBC News AI Summarizer & Subscription Service
+This project is a fully automated service that scrapes the top stories from BBC News, uses Google's Gemini AI to generate concise summaries, and emails a daily digest to all subscribers. It features a public-facing website for users to sign up and is deployed on a serverless architecture.
 
 ![GitHub Actions Workflow Status](https://github.com/owmyr/NewsSummary/actions/workflows/daily-summary.yml/badge.svg)
 ---
-### ‼️Not Finished
 
-* Still working on implementing a (free) subscription service for anyone to receive the emails when they are sent out. 
+🌐 Live Demo & Subscription
+You can subscribe to the daily email digest at the link below:
+
+https://news-summary-3baaa.web.app/
 
 ---
+
 ### ✨ Features
 
-* **Web Scraping**: Automatically fetches the latest top stories from the BBC News homepage.
-* **AI-Powered Summaries**: Leverages the Google Gemini AI model to create clear and concise summaries of complex articles.
-* **Email Digest**: Formats the summaries into a clean, readable HTML email.
-* **Fully Automated**: Uses GitHub Actions for a "set it and forget it" daily execution.
+* Automated Web Scraping: Fetches the latest top stories from the BBC News homepage daily.
+
+* AI-Powered Summaries: Leverages Google's Gemini AI to create clear and neutral summaries of each article.
+
+* Public Subscription System: A live website with a signup form for any user to subscribe to the daily emails.
+
+* Secure & Scalable Backend: Uses Firebase Hosting, Cloud Functions, and a Firestore database to securely manage subscribers.
+
+* Fully Automated: A "set it and forget it" daily workflow managed by GitHub Actions that requires no manual intervention.
 
 ---
 
-## 🛠️ Getting Started
+### 🛠️ Tech Stack
 
-If you want to utilize this on your own before the subscription is available you can run the program by  renaming the ".env.example" to ".env" and replacing it's contents. You will need a Google API Key and App Password from your email.
+* Backend & Scraping: Python, BeautifulSoup
+
+* AI Summarization: Google Gemini AI
+
+* Database & Web: Firebase (Hosting, Cloud Functions, Firestore)
+
+* Automation: GitHub Actions
