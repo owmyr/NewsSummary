@@ -2,8 +2,12 @@ import os
 import json
 import google.generativeai as genai
 from dotenv import load_dotenv
-from MyNews import get_top_story_urls, scrape_article_content
+from mynews import get_top_story_urls, scrape_article_content
 from email_sender import send_summary_email
+
+# --- NEW: Import Firebase Admin SDK ---
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 # --- CONFIG
 NEWS_LIMIT = 5
@@ -15,9 +19,60 @@ def initialize_ai():
     if not api_key:
         raise ValueError("GOOGLE_API_KEY not found in environment variables.")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     return model
 
+# --- MODIFIED: Improved Firestore initialization with better error handling ---
+def initialize_firestore():
+    """
+    Initializes the Firestore client.
+    - For GitHub Actions, it reads the credentials from an environment variable.
+    - For local testing, it reads the `firebase-credentials.json` file.
+    """
+    creds_str = os.getenv("FIREBASE_CREDENTIALS")
+    
+    try:
+        # Running in GitHub Actions (or another environment with the secret)
+        if creds_str:
+            print("Initializing Firestore from environment variable...")
+            creds_json = json.loads(creds_str)
+            cred = credentials.Certificate(creds_json)
+        # Running locally
+        else:
+            print("Initializing Firestore from local `firebase-credentials.json` file...")
+            cred = credentials.Certificate("firebase-credentials.json")
+
+        # Initialize the app if not already initialized
+        if not firebase_admin._apps:
+            firebase_admin.initialize_app(cred)
+            
+        return firestore.client()
+    
+    except FileNotFoundError:
+        print("\n❌ FATAL ERROR: `firebase-credentials.json` not found.")
+        print("Ensure the file is in your project's root directory when running locally.")
+        # Re-raise the exception to stop the script
+        raise
+    except Exception as e:
+        print(f"\n❌ FATAL ERROR: Could not initialize Firestore: {e}")
+        # Re-raise the exception to stop the script
+        raise
+
+# --- NEW: Function to get subscriber emails ---
+def get_subscribers(db):
+    """
+    Fetches all subscriber emails from the 'subscribers' collection in Firestore.
+    """
+    print("Fetching subscriber list from Firestore...")
+    try:
+        docs = db.collection('subscribers').stream()
+        emails = [doc.to_dict().get('email') for doc in docs]
+        valid_emails = [email for email in emails if email] # Filter out any empty entries
+        print(f"✅ Found {len(valid_emails)} subscribers.")
+        return valid_emails
+    except Exception as e:
+        print(f"❌ ERROR: Could not fetch subscribers from Firestore: {e}")
+        return []
 
 def get_ai_summary(model, content):
     if not content or content == "Could not find article content.":
@@ -45,13 +100,20 @@ def main():
     
     try:
         model = initialize_ai()
-    except ValueError as e:
-        print(f"❌ CONFIGURATION ERROR: {e}")
+        db = initialize_firestore() # Connect to the database
+    except Exception as e:
+        # Error message is now printed inside initialize_firestore()
+        print("Script stopped due to configuration error.")
+        return
+
+    # --- MODIFIED: Get subscriber list from Firestore ---
+    recipient_list = get_subscribers(db)
+    if not recipient_list:
+        print("No subscribers found. Exiting.")
         return
 
     # Get the URLs of the top stories
     article_urls = get_top_story_urls(limit=NEWS_LIMIT)
-
     if not article_urls:
         print("Could not fetch any article URLs. Exiting.")
         return
@@ -60,21 +122,16 @@ def main():
     all_summaries = []
     for i, url in enumerate(article_urls, 1):
         print(f"\n--- Processing article {i}/{len(article_urls)} ---")
+        # ... (rest of the loop is the same)
         print(f"URL: {url}")
-
         article_data = scrape_article_content(url)
-        
         if not article_data:
             print("Skipping this article due to a scraping error.")
             continue
-
         print(f"Scraped Title: {article_data['title']}")
         print("Generating summary...")
-        
         summary = get_ai_summary(model, article_data['content'])
-        
         print(f"AI Summary: {summary}")
-
         all_summaries.append({
             "title": article_data['title'],
             "summary": summary,
@@ -82,28 +139,40 @@ def main():
         })
 
     # JSON save
-    if all_summaries:
-        print("\nSaving all summaries to JSON file...")
-        with open(OUTPUT_FILENAME, "w", encoding="utf-8") as f:
-            json.dump(all_summaries, f, ensure_ascii=False, indent=4)
-        print(f"✅ All summaries saved successfully to {OUTPUT_FILENAME}.")
-    else:
-        print("⚠️ No summaries were generated.")
+    if not all_summaries:
+        print("⚠️ No summaries were generated. Cannot send emails.")
+        return
         
-    # email
+    print("\nSaving all summaries to JSON file...")
+    with open(OUTPUT_FILENAME, "w", encoding="utf-8") as f:
+        json.dump(all_summaries, f, ensure_ascii=False, indent=4)
+    print(f"✅ All summaries saved successfully to {OUTPUT_FILENAME}.")
+    
+    # --- MODIFIED: Loop through subscribers and send emails ---
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
-    recipient_email = os.getenv("RECIPIENT_EMAIL")
 
-    if all([sender_email, sender_password, recipient_email]):
-        send_summary_email(
-            summaries=all_summaries,
-            sender_email=sender_email,
-            sender_password=sender_password,
-            recipient_email=recipient_email
-        )
-    else:
-        print("\n⚠️ Email credentials not found in .env file. Skipping email.")
+    if not all([sender_email, sender_password]):
+        print("\n⚠️ Sender email credentials not found in .env file. Skipping email.")
+        return
+
+    print(f"\n📧 Preparing to send emails to {len(recipient_list)} subscribers...")
+    successful_sends = 0
+    for recipient in recipient_list:
+        print(f"Sending to {recipient}...")
+        try:
+            send_summary_email(
+                summaries=all_summaries,
+                sender_email=sender_email,
+                sender_password=sender_password,
+                recipient_email=recipient # Send to the current subscriber
+            )
+            successful_sends += 1
+        except Exception as e:
+            print(f"❌ Failed to send to {recipient}: {e}")
+    
+    print(f"\n✅ Email process completed. Sent {successful_sends}/{len(recipient_list)} emails.")
 
 if __name__ == "__main__":
     main()
+

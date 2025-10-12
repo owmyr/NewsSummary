@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daily News Summarizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+
+    <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+        <h1 class="text-2xl font-bold text-center text-gray-800 mb-2">Get Your Daily AI News Summary</h1>
+        <p class="text-center text-gray-600 mb-6">Enter your email below to receive a daily digest of the top BBC News stories, summarized by AI.</p>
+
+        <form id="subscribe-form">
+            <div class="mb-4">
+                <label for="email" class="sr-only">Email Address</label>
+                <input type="email" id="email" placeholder="you@example.com" required class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
+            </div>
+            <button type="submit" id="submit-button" class="w-full py-2 px-4 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors duration-300">
+                Subscribe
+            </button>
+        </form>
+
+        <div id="message-area" class="mt-4 text-center text-sm hidden"></div>
+    </div>
+
+    <script>
+        // --- IMPORTANT: We will create this URL in the next phase! ---
+        // This is a placeholder that we will replace later.
+        const CLOUD_FUNCTION_URL = 'https://us-central1-news-summary-3baaa.cloudfunctions.net/addSubscriber';
+
+        const form = document.getElementById('subscribe-form');
+        const emailInput = document.getElementById('email');
+        const submitButton = document.getElementById('submit-button');
+        const messageArea = document.getElementById('message-area');
+
+        form.addEventListener('submit', async (event) => {
+            event.preventDefault(); // Stop the form from reloading the page
+
+            // Show a loading state
+            submitButton.disabled = true;
+            submitButton.textContent = 'Subscribing...';
+            messageArea.classList.add('hidden');
+
+            const email = emailInput.value.trim();
+
+            try {
+                const response = await fetch(CLOUD_FUNCTION_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ email: email })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    // Success
+                    messageArea.textContent = result.message || 'Success! Please check your inbox to confirm.';
+                    messageArea.className = 'mt-4 text-center text-sm text-green-600';
+                    form.reset(); // Clear the form
+                } else {
+                    // Server-side error (e.g., email already exists)
+                    throw new Error(result.message || 'An error occurred.');
+                }
+
+            } catch (error) {
+                // Network error or server error
+                messageArea.textContent = error.message;
+                messageArea.className = 'mt-4 text-center text-sm text-red-600';
+            } finally {
+                // Restore button
+                submitButton.disabled = false;
+                submitButton.textContent = 'Subscribe';
+            }
+        });
+    </script>
+</body>
+</html>

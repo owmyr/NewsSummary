@@ -30,4 +30,5 @@ jobs:
               SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
               SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
               RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+              FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
         run: python main.py

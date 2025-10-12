@@ -1,0 +1,9 @@
+# Minimal stub for google.generativeai to satisfy Pylance
+from typing import Any, Iterable
+
+class GenerativeModel:
+    def __init__(self, model_name: str = ...) -> None: ...
+    def generate_content(self, prompt: str, **kwargs: Any) -> Any: ...
+
+
+def configure(*, api_key: str | None = ...) -> None: ...

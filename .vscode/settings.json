@@ -1,0 +1,15 @@
+{
+    // Use the project's virtual environment as the default interpreter
+    "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+    // Help Pylance find packages installed in the venv
+    "python.analysis.extraPaths": [
+        "${workspaceFolder}\\.venv\\Lib\\site-packages"
+    ],
+
+    // Use a local stubs folder for missing or dynamic packages
+    "python.analysis.stubPath": "stubs",
+
+    // Keep analysis fairly permissive but accurate
+    "python.analysis.typeCheckingMode": "basic"
+}
