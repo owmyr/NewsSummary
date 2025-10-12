@@ -2,10 +2,8 @@ import os
 import json
 import google.generativeai as genai
 from dotenv import load_dotenv
-from mynews import get_top_story_urls, scrape_article_content
+from MyNews import get_top_story_urls, scrape_article_content
 from email_sender import send_summary_email
-
-# --- NEW: Import Firebase Admin SDK ---
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -19,20 +17,14 @@ def initialize_ai():
     if not api_key:
         raise ValueError("GOOGLE_API_KEY not found in environment variables.")
     genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     return model
 
-# --- MODIFIED: Improved Firestore initialization with better error handling ---
 def initialize_firestore():
-    """
-    Initializes the Firestore client.
-    - For GitHub Actions, it reads the credentials from an environment variable.
-    - For local testing, it reads the `firebase-credentials.json` file.
-    """
     creds_str = os.getenv("FIREBASE_CREDENTIALS")
     
     try:
-        # Running in GitHub Actions (or another environment with the secret)
+        # Running in GitHub Actions
         if creds_str:
             print("Initializing Firestore from environment variable...")
             creds_json = json.loads(creds_str)
@@ -51,14 +43,12 @@ def initialize_firestore():
     except FileNotFoundError:
         print("\n❌ FATAL ERROR: `firebase-credentials.json` not found.")
         print("Ensure the file is in your project's root directory when running locally.")
-        # Re-raise the exception to stop the script
         raise
     except Exception as e:
         print(f"\n❌ FATAL ERROR: Could not initialize Firestore: {e}")
-        # Re-raise the exception to stop the script
         raise
 
-# --- NEW: Function to get subscriber emails ---
+# --- Subscriber emails ---
 def get_subscribers(db):
     """
     Fetches all subscriber emails from the 'subscribers' collection in Firestore.
@@ -102,11 +92,10 @@ def main():
         model = initialize_ai()
         db = initialize_firestore() # Connect to the database
     except Exception as e:
-        # Error message is now printed inside initialize_firestore()
         print("Script stopped due to configuration error.")
         return
 
-    # --- MODIFIED: Get subscriber list from Firestore ---
+    # --- Get subscriber list from Firestore ---
     recipient_list = get_subscribers(db)
     if not recipient_list:
         print("No subscribers found. Exiting.")
@@ -122,7 +111,6 @@ def main():
     all_summaries = []
     for i, url in enumerate(article_urls, 1):
         print(f"\n--- Processing article {i}/{len(article_urls)} ---")
-        # ... (rest of the loop is the same)
         print(f"URL: {url}")
         article_data = scrape_article_content(url)
         if not article_data:
@@ -148,7 +136,7 @@ def main():
         json.dump(all_summaries, f, ensure_ascii=False, indent=4)
     print(f"✅ All summaries saved successfully to {OUTPUT_FILENAME}.")
     
-    # --- MODIFIED: Loop through subscribers and send emails ---
+    # --- Loop through subscribers and send emails ---
     sender_email = os.getenv("SENDER_EMAIL")
     sender_password = os.getenv("SENDER_PASSWORD")
 
@@ -165,7 +153,7 @@ def main():
                 summaries=all_summaries,
                 sender_email=sender_email,
                 sender_password=sender_password,
-                recipient_email=recipient # Send to the current subscriber
+                recipient_email=recipient
             )
             successful_sends += 1
         except Exception as e:
