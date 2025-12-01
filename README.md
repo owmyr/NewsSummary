@@ -7,7 +7,7 @@ This project is a fully automated service that scrapes the top stories from BBC 
 🌐 Live Demo & Subscription
 You can subscribe to the daily email digest at the link below:
 
-https://news-summary-3baaa.web.app/
+https://thedailybot.web.app/
 
 ---
 
