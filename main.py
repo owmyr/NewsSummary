@@ -40,9 +40,9 @@ db = initialize_firestore()
 #  GEMINI SETUP (Gemini 2.5 Flash)
 # ============================================================
 
-GENAI_API_KEY = os.getenv("GEMINI_API_KEY")
+GENAI_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GENAI_API_KEY:
-    raise RuntimeError("❌ Missing GEMINI_API_KEY environment variable.")
+    raise RuntimeError("❌ Missing GOOGLE_API_KEY environment variable.")
 
 genai.configure(api_key=GENAI_API_KEY)
 
