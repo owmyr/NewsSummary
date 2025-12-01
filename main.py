@@ -3,9 +3,9 @@ import json
 import time
 import re
 import google.generativeai as genai
-from datetime import datetime
+from datetime import datetime, timezone
 from MyNews import get_top_story_urls, scrape_article_content
-from email_sender import send_email_digest
+from email_sender import send_summary_email
 
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -242,15 +242,19 @@ def main():
     print("🚀 Daily BBC Summary Runner")
     print("============================\n")
 
-    today_str = datetime.utcnow().strftime("%Y-%m-%d")
+    from datetime import datetime, timezone
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+    # FIX: initialize summary list here
+    all_summaries = []
 
     # ---- Fetch article URLs ----
     urls = get_top_story_urls(limit=5)
     if not urls:
         print("❌ No URLs found. Exiting.")
         return
-
-    all_summaries = []
 
     for url in urls:
         print(f"\n📄 Scraping article:\n{url}")
@@ -261,7 +265,10 @@ def main():
             continue
 
         # Summarize
-        summary = summarize_article(article["content"], article["title"])
+        title = article["title"] or "No title"
+        summary = summarize_article(article["content"], title)
+
+
         if not summary:
             print("⚠️ Summary generation failed. Skipping.")
             continue
@@ -274,15 +281,24 @@ def main():
         print("❌ No summaries created. Exiting.")
         return
 
-    # ---- Save to Firestore ----
+    # Save to Firestore
     save_summaries_to_firestore(today_str, all_summaries)
 
-    # ---- Send email digest ----
+    # Send email digest
     print("\n📨 Sending email digest...")
-    send_email_digest(all_summaries)
-    print("✅ Email digest sent")
 
-    print("\n🎉 Daily summary completed successfully!\n")
+    sender_email = os.getenv("SENDER_EMAIL")
+    sender_password = os.getenv("SENDER_PASSWORD")
+    recipient_email = os.getenv("RECIPIENT_EMAIL")
+
+    if not (sender_email and sender_password and recipient_email):
+        print("⚠️ Missing email environment variables. Skipping email sending.")
+    else:
+        send_summary_email(all_summaries, sender_email, sender_password, recipient_email)
+
+    print("✅ Email digest step complete.")
+
+
 
 
 if __name__ == "__main__":
