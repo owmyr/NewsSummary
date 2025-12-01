@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup, Tag
 from urllib.parse import urljoin
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 
 BBC_NEWS_URL = "https://www.bbc.com/news"
 
@@ -15,22 +15,54 @@ HEADERS = {
 
 
 # ============================================================
-#  IMAGE EXTRACTION (full robust version)
+#  IMAGE EXTRACTION (Fixed for Type Checkers)
 # ============================================================
 
-def extract_article_image(soup: BeautifulSoup) -> Optional[str]:
+def extract_article_image(soup: BeautifulSoup) -> str | None:
     """
-    Extracts the main BBC article image from multiple fallback selectors.
-    Works safely with BeautifulSoup 4.12+'s internal attribute types:
-    _AttributeValue, _AttributeValueList, etc.
+    Extracts the main article image using robust attribute dicts.
     """
 
+    def normalize(url: Any) -> str | None:
+        if not url:
+            return None
+        
+        # Safety check: BS4 .get() can return a list
+        if isinstance(url, list):
+            if not url:
+                return None
+            url = url[0]
+
+        url_str = str(url).strip()
+        
+        if url_str.startswith("//"):
+            return "https:" + url_str
+        if url_str.startswith("http://") or url_str.startswith("https://"):
+            return url_str
+        return None
+
+    # --- PRIORITY 1: Open Graph (The Gold Standard) ---
+    # We use attrs={} to avoid collision with reserved args
+    og_image = soup.find("meta", attrs={"property": "og:image"})
+    if og_image:
+        url = normalize(og_image.get("content"))
+        if url:
+            return url
+
+    # --- PRIORITY 2: Twitter Card ---
+    # FIXED: Used attrs={"name": ...} to fix the type error
+    tw_image = soup.find("meta", attrs={"name": "twitter:image"})
+    if tw_image:
+        url = normalize(tw_image.get("content"))
+        if url:
+            return url
+
+    # --- PRIORITY 3: Manual Body Scraping (Fallback) ---
     selectors = [
-        "img[data-testid='image-component-image']",
-        "img[data-component='image-block'] img",
+        "img[data-testid='hero-image']",
+        "div[data-component='image-block'] img",
         "figure img",
-        "img[loading='lazy']",
-        "picture img",
+        "main img", 
     ]
 
     for sel in selectors:
@@ -38,31 +70,19 @@ def extract_article_image(soup: BeautifulSoup) -> Optional[str]:
         if not img:
             continue
 
-        # CASE 1 — Direct "src"
-        src = img.get("src")
-        if src:
-            return str(src).strip()
-
-        # CASE 2 — srcset (may be AttributeValue or list-like)
         srcset = img.get("srcset")
         if srcset:
             srcset_str = str(srcset)
-            candidates = []
-
-            # srcset looks like:
-            # "https://...640.webp 640w, https://...1024.webp 1024w"
-            for item in srcset_str.split(","):
-                item = item.strip()
-                if not item:
-                    continue
-
-                parts = item.split(" ")
-                if parts:
-                    candidates.append(parts[0])
-
-            if candidates:
-                # Usually last is highest-res
-                return candidates[-1]
+            parts = srcset_str.split(",")
+            if parts:
+                last_entry = parts[-1].strip().split(" ")[0]
+                url = normalize(last_entry)
+                if url:
+                    return url
+        
+        url = normalize(img.get("src"))
+        if url:
+            return url
 
     return None
 
@@ -72,11 +92,6 @@ def extract_article_image(soup: BeautifulSoup) -> Optional[str]:
 # ============================================================
 
 def get_top_story_urls(limit: int = 5) -> List[str]:
-    """
-    Scrapes BBC News homepage and returns top <limit> article URLs.
-    Uses robust relative→absolute URL normalization.
-    """
-
     print("📡 Fetching top stories from BBC News homepage...")
 
     try:
@@ -85,22 +100,18 @@ def get_top_story_urls(limit: int = 5) -> List[str]:
 
         soup = BeautifulSoup(response.content, "html.parser")
 
-        # BBC article pattern links
-        headlines = soup.select('a[href*="/news/articles/"]')
-
+        headlines = soup.find_all("a", href=True)
+        
         unique_urls: set[str] = set()
 
         for tag in headlines:
-            if not isinstance(tag, Tag):
-                continue
-
             raw_href = tag.get("href")
-            if raw_href is None:
+            if not raw_href:
                 continue
 
-            # Normalize BeautifulSoup attribute → pure string
             href = str(raw_href).strip()
-            if not href:
+            
+            if "/news/articles/" not in href:
                 continue
 
             absolute_url = urljoin(BBC_NEWS_URL, href)
@@ -121,46 +132,38 @@ def get_top_story_urls(limit: int = 5) -> List[str]:
 
 
 # ============================================================
-#  ARTICLE TEXT EXTRACTION — Robust Content Parsing
+#  ARTICLE TEXT EXTRACTION
 # ============================================================
 
 def extract_article_text(soup: BeautifulSoup) -> str:
-    """
-    Extracts article text using multiple BBC fallback patterns.
-    """
-
-    # Primary BBC format
     blocks = soup.select("div[data-component='text-block']")
+    
+    if not blocks:
+        blocks = soup.select("article p")
 
     paragraphs: List[str] = []
-    for block in blocks:
-        for p in block.find_all("p"):
-            text = p.get_text(strip=True)
-            if text:
-                paragraphs.append(text)
+    
+    if blocks:
+        for block in blocks:
+            if block.name == 'p':
+                 text = block.get_text(strip=True)
+                 if text: paragraphs.append(text)
+            else:
+                for p in block.find_all("p"):
+                    text = p.get_text(strip=True)
+                    if text:
+                        paragraphs.append(text)
+    
+    if not paragraphs:
+         main_content = soup.find("main")
+         if main_content:
+             for p in main_content.find_all("p"):
+                 text = p.get_text(strip=True)
+                 if text and len(text) > 20: 
+                     paragraphs.append(text)
 
     if paragraphs:
         return "\n".join(paragraphs)
-
-    # Fallback — any <article> tag
-    article = soup.find("article")
-    if article:
-        text = "\n".join(
-            p.get_text(strip=True)
-            for p in article.find_all("p")
-            if p.get_text(strip=True)
-        )
-        if text:
-            return text
-
-    # Fallback — any <p> on the page
-    fallback_text = "\n".join(
-        p.get_text(strip=True)
-        for p in soup.find_all("p")
-        if p.get_text(strip=True)
-    )
-    if fallback_text:
-        return fallback_text
 
     return "Could not find article content."
 
@@ -170,31 +173,16 @@ def extract_article_text(soup: BeautifulSoup) -> str:
 # ============================================================
 
 def scrape_article_content(url: str) -> Optional[dict[str, str | None]]:
-
-
-    ...
-
-    """
-    Fetches a BBC article page, extracts:
-    - Title
-    - Content
-    - Image URL
-    """
-
     try:
         response = requests.get(url, headers=HEADERS, timeout=10)
         response.raise_for_status()
 
         soup = BeautifulSoup(response.content, "html.parser")
 
-        # Title
-        title_tag = soup.select_one("#main-heading") or soup.find("h1")
+        title_tag = soup.find("h1")
         title = title_tag.get_text(strip=True) if title_tag else "No title found"
 
-        # Text
         content = extract_article_text(soup)
-
-        # Image
         image_url = extract_article_image(soup)
 
         return {

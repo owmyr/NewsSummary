@@ -3,76 +3,97 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Unsubscribe – Daily AI BBC News Digest</title>
+  <title>Unsubscribe • The Daily Bot</title>
+  
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,400;500;700&family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,500;1,6..72,400&display=swap" rel="stylesheet">
+
   <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            serif: ['Newsreader', 'serif'],
+            sans: ['DM Sans', 'sans-serif'],
+          },
+          colors: {
+            'stone-dark': '#292524',
+            'stone-light': '#78716c',
+            'bg-sand': '#faf9f6',
+            'brand-sage': '#709775',
+            'brand-clay': '#e5989b', /* Soft Red/Pink for Unsubscribe */
+          },
+          boxShadow: {
+            'soft': '0 20px 25px -5px rgba(112, 151, 117, 0.15), 0 8px 10px -6px rgba(112, 151, 117, 0.1)',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body { background-color: #faf9f6; }
+  </style>
 </head>
 
-<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
+<body class="text-stone-dark font-sans min-h-screen flex flex-col justify-center items-center p-4">
 
-  <!-- MAIN CONTAINER -->
-  <main class="flex-1 flex items-center justify-center px-4 py-10">
-    <div class="max-w-md w-full rounded-3xl bg-slate-900 border border-slate-800 p-6 sm:p-8 space-y-6 shadow-xl">
+  <main class="w-full max-w-md bg-white rounded-3xl shadow-soft border border-stone-100 p-8 sm:p-10 text-center space-y-8">
+    
+    <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-brand-clay/10 text-brand-clay mb-2">
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-8 h-8">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M21.75 9v.906a2.25 2.25 0 01-1.183 1.981l-6.478 3.488M2.25 9v.906a2.25 2.25 0 001.183 1.981l6.478 3.488m8.839 2.51l-4.66-2.51m0 0l-1.023-.55a2.25 2.25 0 00-2.134 0l-1.022.55m0 0l-4.661 2.51m16.5 1.615a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V8.844a2.25 2.25 0 011.183-1.98l7.5-4.04a2.25 2.25 0 012.134 0l7.5 4.04a2.25 2.25 0 011.183 1.98V19.5z" />
+        </svg>          
+    </div>
 
-      <!-- Header -->
-      <div class="flex items-center gap-3">
-        <div class="h-12 w-12 rounded-2xl bg-gradient-to-br from-pink-500 via-red-500 to-orange-500 flex items-center justify-center shadow-lg">
-          <span class="text-2xl">🧹</span>
-        </div>
-        <div>
-          <h1 class="font-semibold text-xl">Manage your subscription</h1>
-          <p class="text-xs text-slate-400">We’re sad to see you go 💔</p>
-        </div>
-      </div>
+    <div class="space-y-2">
+        <h1 class="font-serif text-3xl font-medium text-stone-dark">Manage Subscription</h1>
+        <p class="text-stone-light text-sm">We are sad to see you go.</p>
+    </div>
 
-      <!-- Description -->
-      <p class="text-sm text-slate-300">
-        Enter your email address below to unsubscribe from the Daily AI BBC News Digest.
-        You can resubscribe anytime on the homepage.
-      </p>
-
-      <!-- Form -->
-      <form id="unsubscribe-form" class="space-y-4">
-        <div>
-          <label for="email" class="block text-sm font-medium mb-1">Email address</label>
-          <div class="flex rounded-xl border border-slate-700 bg-slate-950 focus-within:border-pink-400 focus-within:ring-1 focus-within:ring-pink-400">
-            <span class="pl-3 flex items-center text-slate-400 text-sm">@</span>
-            <input
-              id="email"
-              type="email"
-              required
-              class="w-full bg-transparent text-sm px-2 py-3 outline-none rounded-r-xl"
-              placeholder="you@example.com"
-            />
-          </div>
+    <form id="unsubscribe-form" class="space-y-4">
+        <div class="relative">
+            <label for="email" class="sr-only">Email Address</label>
+            <input 
+                id="email" 
+                type="email" 
+                required 
+                placeholder="email@example.com"
+                class="w-full px-6 py-4 rounded-full bg-bg-sand border border-stone-200 outline-none focus:ring-2 focus:ring-brand-clay/20 focus:border-brand-clay transition-all text-stone-dark placeholder:text-stone-300 text-center"
+            >
         </div>
 
-        <button
-          id="submit-button"
-          type="submit"
-          class="w-full py-3 text-sm font-semibold rounded-xl bg-pink-500 hover:bg-pink-400 text-slate-950 transition disabled:opacity-60 disabled:cursor-not-allowed"
+        <button 
+            id="submit-button" 
+            type="submit" 
+            class="w-full py-4 rounded-full bg-stone-dark text-white font-medium hover:bg-brand-clay transition-colors shadow-lg shadow-stone-200"
         >
-          Unsubscribe
+            Unsubscribe
         </button>
 
-        <div id="message-area" class="text-xs text-center min-h-[1.25rem]"></div>
-      </form>
+        <div id="message-area" class="min-h-[1.5rem] text-xs font-bold mt-2"></div>
+    </form>
 
-      <p class="text-[0.75rem] text-slate-500 text-center">
-        Changed your mind?  
-        <a href="/" class="text-cyan-400 hover:underline">Return to homepage</a>.
-      </p>
-
+    <div class="pt-6 border-t border-stone-100 flex flex-col gap-3 text-xs text-stone-400">
+        <p>Changed your mind?</p>
+        <a href="/" class="text-stone-dark font-bold hover:text-brand-sage transition-colors underline decoration-stone-200 underline-offset-4">Return to Homepage</a>
     </div>
+
   </main>
 
-  <!-- FOOTER -->
-  <footer class="border-t border-slate-800 py-4 text-center text-xs text-slate-500">
-    Built with 🧠 + 🤖 • <a href="/" class="text-cyan-400 hover:underline">Home</a>
+  <footer class="mt-8 text-center">
+    <a href="https://owmyr.github.io/" target="_blank" 
+        class="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-wider bg-white border border-stone-200 px-4 py-2 rounded-full hover:border-brand-sage hover:text-brand-sage transition-colors shadow-sm text-stone-400">
+       <span>Built by Owmyr</span>
+       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-3 h-3">
+           <path fill-rule="evenodd" d="M3 10a.75.75 0 01.75-.75h10.638L10.23 5.29a.75.75 0 111.04-1.08l5.5 5.5a.75.75 0 010 1.08l-5.5 5.5a.75.75 0 11-1.04-1.08l4.158-3.96H3.75A.75.75 0 013 10z" clip-rule="evenodd" />
+       </svg>          
+    </a>
   </footer>
 
-  <!-- SCRIPT -->
   <script>
-    // Your real Cloud Function URL (v1 HTTPS Trigger)
     const UNSUBSCRIBE_URL = "https://us-central1-news-summary-3baaa.cloudfunctions.net/unsubscribeUser";
 
     document.getElementById("unsubscribe-form").addEventListener("submit", async (e) => {
@@ -85,8 +106,9 @@
       const email = emailInput.value.trim();
       if (!email) return;
 
+      const originalText = submitButton.innerText;
       submitButton.disabled = true;
-      submitButton.textContent = "Processing...";
+      submitButton.innerText = "Processing...";
       messageArea.textContent = "";
 
       try {
@@ -99,21 +121,22 @@
         const data = await response.json();
 
         if (response.ok) {
-          messageArea.textContent = data.message || "You have been unsubscribed.";
-          messageArea.className = "text-xs text-emerald-400 text-center";
+          messageArea.innerHTML = `<span class="text-brand-sage">✓ ${data.message || "You have been unsubscribed."}</span>`;
           emailInput.value = "";
+          // Disable button permanently on success
+          submitButton.classList.add("bg-stone-300", "cursor-not-allowed", "hover:bg-stone-300");
+          submitButton.innerText = "Unsubscribed";
         } else {
-          messageArea.textContent = data.message || "Something went wrong.";
-          messageArea.className = "text-xs text-red-400 text-center";
+          messageArea.innerHTML = `<span class="text-brand-clay">✕ ${data.message || "Something went wrong."}</span>`;
+          submitButton.disabled = false;
+          submitButton.innerText = originalText;
         }
 
       } catch (err) {
-        messageArea.textContent = "Network error.";
-        messageArea.className = "text-xs text-red-400 text-center";
+        messageArea.innerHTML = `<span class="text-brand-clay">✕ Network error. Please try again.</span>`;
+        submitButton.disabled = false;
+        submitButton.innerText = originalText;
       }
-
-      submitButton.disabled = false;
-      submitButton.textContent = "Unsubscribe";
     });
   </script>
 

@@ -64,6 +64,15 @@ def send_summary_email(summaries, sender_email, sender_password, recipient_email
 
     # Format the HTML body and attach it
     html_body = format_html_body(summaries)
+    html_body += """
+    <hr>
+    <p style="font-size:12px; color:#666;">
+    You can unsubscribe anytime:<br>
+    <a href="https://news-summary-3baaa.web.app/unsubscribe.html" style="color:#3366cc;">
+    Unsubscribe here
+    </a>
+    </p>
+    """
     message.attach(MIMEText(html_body, "html"))
 
     # Create a secure SSL context
