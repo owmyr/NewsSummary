@@ -266,7 +266,9 @@ def main():
 
         # Summarize
         title = article["title"] or "No title"
-        summary = summarize_article(article["content"], title)
+        content = article["content"] or ""
+        summary = summarize_article(content, title)
+
 
 
         if not summary:
