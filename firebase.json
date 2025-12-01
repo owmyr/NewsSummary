@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "thedailybot",
     "public": "public",
     "ignore": [
       "firebase.json",
