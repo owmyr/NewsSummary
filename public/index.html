@@ -1,79 +1,252 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Daily News Summarizer</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Daily AI BBC News Digest</title>
+  <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen">
 
-    <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-        <h1 class="text-2xl font-bold text-center text-gray-800 mb-2">Get Your Daily AI News Summary</h1>
-        <p class="text-center text-gray-600 mb-6">Enter your email below to receive a daily digest of the top BBC News stories, summarized by AI.</p>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex flex-col">
 
-        <form id="subscribe-form">
-            <div class="mb-4">
-                <label for="email" class="sr-only">Email Address</label>
-                <input type="email" id="email" placeholder="you@example.com" required class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500">
-            </div>
-            <button type="submit" id="submit-button" class="w-full py-2 px-4 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700 transition-colors duration-300">
-                Subscribe
-            </button>
-        </form>
-
-        <div id="message-area" class="mt-4 text-center text-sm hidden"></div>
+  <!-- NAVBAR / HEADER -->
+  <header class="border-b border-slate-800 bg-slate-950/90 backdrop-blur sticky top-0 z-10">
+    <div class="max-w-5xl mx-auto px-4 py-4 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="h-10 w-10 rounded-2xl bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-500 flex items-center justify-center shadow-lg">
+          <span class="text-2xl">🤖</span>
+        </div>
+        <div>
+          <h1 class="font-semibold text-lg">Daily AI News Summary</h1>
+          <p class="text-xs text-slate-400">BBC headlines, cutely summarized by AI.</p>
+        </div>
+      </div>
+      <a href="#subscribe" class="hidden sm:inline-block text-sm px-3 py-1 rounded-full bg-slate-800 hover:bg-slate-700">
+        Get the email digest
+      </a>
     </div>
+  </header>
 
-    <script>
-        // --- IMPORTANT: We will create this URL in the next phase! ---
-        // This is a placeholder that we will replace later.
-        const CLOUD_FUNCTION_URL = 'https://us-central1-news-summary-3baaa.cloudfunctions.net/addSubscriber';
+  <!-- MAIN CONTENT -->
+  <main class="flex-1">
+    <section class="max-w-5xl mx-auto px-4 py-8 grid gap-8 lg:grid-cols-[2fr,1fr] items-start">
 
-        const form = document.getElementById('subscribe-form');
-        const emailInput = document.getElementById('email');
-        const submitButton = document.getElementById('submit-button');
-        const messageArea = document.getElementById('message-area');
+      <!-- LEFT: Hero + News List -->
+      <div class="space-y-6">
 
-        form.addEventListener('submit', async (event) => {
-            event.preventDefault(); // Stop the form from reloading the page
+        <!-- Cute AI hero -->
+        <div class="rounded-3xl bg-gradient-to-br from-slate-900 via-slate-900 to-slate-950 border border-slate-800 p-6 sm:p-8 flex flex-col sm:flex-row gap-6 items-center">
+          <div class="flex-1 space-y-3">
+            <p class="text-xs uppercase tracking-[0.2em] text-cyan-400 font-semibold">
+              BBC • AI Summary • Daily
+            </p>
+            <h2 class="text-2xl sm:text-3xl font-bold">
+              Your BBC headlines, rewritten by a friendly little robot. 💌
+            </h2>
+            <p class="text-sm text-slate-300">
+              Every morning, we scrape the latest top stories from BBC News, run them through an AI
+              summarizer, and send you a concise, human-readable digest. No clickbait, no doomscrolling.
+            </p>
+            <div class="flex flex-wrap gap-2 text-xs text-slate-400">
+              <span class="px-2 py-1 rounded-full bg-slate-800/70 border border-slate-700">Automated by GitHub Actions</span>
+              <span class="px-2 py-1 rounded-full bg-slate-800/70 border border-slate-700">Powered by Gemini</span>
+              <span class="px-2 py-1 rounded-full bg-slate-800/70 border border-slate-700">Delivered via email</span>
+            </div>
+          </div>
 
-            // Show a loading state
-            submitButton.disabled = true;
-            submitButton.textContent = 'Subscribing...';
-            messageArea.classList.add('hidden');
+          <div class="shrink-0">
+            <div class="relative h-40 w-40 sm:h-44 sm:w-44">
+              <div class="absolute inset-0 rounded-[2rem] bg-gradient-to-br from-cyan-500 via-blue-500 to-purple-500 opacity-70 blur-2xl"></div>
+              <div class="relative h-full w-full rounded-[2rem] bg-slate-900 border border-slate-700 flex flex-col items-center justify-center gap-3 shadow-xl">
+                <div class="h-16 w-16 rounded-3xl bg-slate-800 flex items-center justify-center">
+                  <span class="text-4xl">🤖</span>
+                </div>
+                <div class="px-4 text-center text-xs text-slate-300">
+                  <p class="font-semibold text-slate-100">AI News Buddy</p>
+                  <p>Reads BBC for you so you don't have to.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
 
-            const email = emailInput.value.trim();
+        <!-- Today's news -->
+        <section class="space-y-3">
+          <div class="flex items-baseline justify-between gap-2">
+            <div>
+              <h3 class="text-lg font-semibold">Today’s AI-Summarized BBC Headlines</h3>
+              <p class="text-xs text-slate-400" id="news-date"></p>
+            </div>
+            <span id="news-status" class="text-xs text-slate-400"></span>
+          </div>
 
-            try {
-                const response = await fetch(CLOUD_FUNCTION_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ email: email })
-                });
+          <div id="news-list" class="grid gap-4 sm:grid-cols-2"></div>
+        </section>
+      </div>
 
-                const result = await response.json();
+      <!-- RIGHT: Subscription card -->
+      <aside id="subscribe" class="lg:sticky lg:top-24">
+        <div class="rounded-3xl bg-slate-900 border border-slate-800 p-6 space-y-5 shadow-xl">
+          <h3 class="text-lg font-semibold">Get the full digest by email</h3>
+          <p class="text-sm text-slate-300">
+            One email per day, early in the morning. No spam, no tracking, easy to unsubscribe.
+          </p>
 
-                if (response.ok) {
-                    // Success
-                    messageArea.textContent = result.message || 'Success! Please check your inbox to confirm.';
-                    messageArea.className = 'mt-4 text-center text-sm text-green-600';
-                    form.reset(); // Clear the form
-                } else {
-                    // Server-side error (e.g., email already exists)
-                    throw new Error(result.message || 'An error occurred.');
-                }
+          <form id="subscribe-form" class="space-y-4">
+            <div>
+              <label for="email" class="block text-sm font-medium mb-1">Email address</label>
+              <div class="flex rounded-xl border border-slate-700 bg-slate-950 focus-within:border-cyan-400 focus-within:ring-1 focus-within:ring-cyan-400">
+                <span class="pl-3 flex items-center text-slate-400 text-sm">@</span>
+                <input
+                  id="email"
+                  type="email"
+                  required
+                  class="w-full bg-transparent text-sm px-2 py-3 outline-none rounded-r-xl"
+                  placeholder="you@example.com"
+                />
+              </div>
+            </div>
 
-            } catch (error) {
-                // Network error or server error
-                messageArea.textContent = error.message;
-                messageArea.className = 'mt-4 text-center text-sm text-red-600';
-            } finally {
-                // Restore button
-                submitButton.disabled = false;
-                submitButton.textContent = 'Subscribe';
-            }
+            <button id="submit-button" type="submit"
+              class="w-full py-3 text-sm font-semibold rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 transition disabled:opacity-60 disabled:cursor-not-allowed">
+              Subscribe to daily digest
+            </button>
+
+            <div id="message-area" class="text-xs text-center min-h-[1.25rem]"></div>
+          </form>
+
+          <p class="text-[0.7rem] text-slate-500">
+            You can unsubscribe anytime from the email footer or the
+            <a href="/unsubscribe.html" class="text-cyan-400 hover:underline">unsubscribe page</a>.
+          </p>
+        </div>
+      </aside>
+
+    </section>
+  </main>
+
+  <footer class="border-t border-slate-800 py-4 text-center text-xs text-slate-500">
+    Built with 🧠 + 🤖 • <a href="/unsubscribe.html" class="text-cyan-400 hover:underline">Manage subscription</a>
+  </footer>
+
+  <!-- ========================= -->
+  <!--  FRONTEND SCRIPT SECTION -->
+  <!-- ========================= -->
+
+  <script>
+    // 🔥 Your production Cloud Function URLs
+    const ADD_SUBSCRIBER_URL = "https://addsubscriber-3rfg7yfdma-uc.a.run.app";
+    const LATEST_NEWS_URL = "https://us-central1-news-summary-3baaa.cloudfunctions.net/latestNews";
+
+    // -------------------------
+    // LOAD TODAY'S NEWS
+    // -------------------------
+    async function loadNews() {
+      const statusEl = document.getElementById('news-status');
+      const dateEl = document.getElementById('news-date');
+      const listEl = document.getElementById('news-list');
+
+      statusEl.textContent = "Loading latest summaries...";
+
+      try {
+        const response = await fetch(LATEST_NEWS_URL);
+
+        if (!response.ok) {
+          statusEl.textContent = "No summaries available yet.";
+          return;
+        }
+
+        const data = await response.json();
+        const { date, articles } = data;
+
+        dateEl.textContent = date ? `From BBC news on ${date}` : "";
+        statusEl.textContent = "";
+
+        listEl.innerHTML = "";
+
+        (articles || []).forEach((article) => {
+          const card = document.createElement("article");
+          card.className =
+            "rounded-2xl bg-slate-900 border border-slate-800 p-4 flex flex-col gap-2 hover:border-cyan-400/60 transition";
+
+          card.innerHTML = `
+            <div class="overflow-hidden rounded-xl mb-2 border border-slate-800">
+                <img 
+                src="${article.image_url || '/placeholder.jpg'}" 
+                class="w-full h-32 object-cover bg-slate-900"
+                alt="Article image"
+                onerror="this.src='/placeholder.jpg'"
+                />
+            </div>
+
+            <h4 class="text-sm font-semibold">${article.title || 'Untitled story'}</h4>
+
+            <p class="text-xs text-slate-300 line-clamp-5">
+                ${article.summary || ''}
+            </p>
+
+            <a href="${article.url || '#'}" target="_blank" rel="noopener noreferrer"
+                class="mt-1 text-xs text-cyan-400 hover:underline inline-flex items-center gap-1">
+                Read on BBC <span>↗</span>
+            </a>
+            `;
+
+
+          listEl.appendChild(card);
         });
-    </script>
+
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "Error loading news.";
+      }
+    }
+
+    // -------------------------
+    // SUBSCRIBE FORM
+    // -------------------------
+    document.getElementById("subscribe-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+
+      const emailInput = document.getElementById("email");
+      const submitButton = document.getElementById("submit-button");
+      const messageArea = document.getElementById("message-area");
+
+      const email = emailInput.value.trim();
+
+      submitButton.disabled = true;
+      submitButton.textContent = "Subscribing...";
+      messageArea.textContent = "";
+
+      try {
+        const response = await fetch(ADD_SUBSCRIBER_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email })
+        });
+
+        const result = await response.json();
+
+        if (response.ok) {
+          messageArea.textContent = result.message || "Subscription successful!";
+          messageArea.className = "text-xs text-emerald-400 text-center";
+          emailInput.value = "";
+        } else {
+          messageArea.textContent = result.message || "Something went wrong.";
+          messageArea.className = "text-xs text-red-400 text-center";
+        }
+
+      } catch (error) {
+        messageArea.textContent = "Network error.";
+        messageArea.className = "text-xs text-red-400 text-center";
+      }
+
+      submitButton.disabled = false;
+      submitButton.textContent = "Subscribe to daily digest";
+    });
+
+    // Load news on page load
+    loadNews();
+  </script>
+
 </body>
 </html>

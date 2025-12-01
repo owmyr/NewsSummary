@@ -52,3 +52,59 @@ exports.addSubscriber = functions.https.onRequest((req, res) => {
     }
   });
 });
+
+// Returns the most recent daily news summaries saved by main.py
+exports.latestNews = functions.https.onRequest((req, res) => {
+  cors(req, res, async () => {
+    try {
+      const snapshot = await db
+        .collection("dailySummaries")
+        .orderBy("date", "desc")
+        .limit(1)
+        .get();
+
+      if (snapshot.empty) {
+        return res.status(404).json({ error: "No news summaries found" });
+      }
+
+      return res.status(200).json(snapshot.docs[0].data());
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ error: "Server error" });
+    }
+  });
+});
+
+
+// Unsubscribes a user by email from the 'subscribers' collection
+exports.unsubscribeUser = functions.https.onRequest((req, res) => {
+  cors(req, res, async () => {
+    if (req.method !== "POST") {
+      return res.status(405).json({ message: "Method not allowed" });
+    }
+
+    const { email } = req.body;
+
+    if (!email || isInvalidEmail(email)) {
+      return res.status(400).json({ message: "Invalid email" });
+    }
+
+    try {
+      const ref = db.collection("subscribers");
+      const docs = await ref.where("email", "==", email).get();
+
+      if (docs.empty) {
+        return res.status(404).json({ message: "Email not found" });
+      }
+
+      const batch = db.batch();
+      docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+
+      return res.status(200).json({ message: "Unsubscribed successfully" });
+    } catch (err) {
+      console.error(err);
+      return res.status(500).json({ message: "Server error" });
+    }
+  });
+});
