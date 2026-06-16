@@ -400,7 +400,12 @@ async def test_pt_br_fallback_path_uses_portuguese_instruction(test_settings: Se
 
 
 class _FakeAPIError(Exception):
-    """Minimal stand-in for google.genai.errors.APIError for testing the parser."""
+    """Minimal stand-in for google.genai.errors.APIError for testing the parser.
+
+    Holds the same ``details``/``code``/``status`` attributes the production
+    code reads from real APIError instances. Does NOT subclass the real
+    class — use :func:`_make_api_error` when an isinstance check is required.
+    """
 
     def __init__(self, details: dict) -> None:
         self.details = details
@@ -410,6 +415,34 @@ class _FakeAPIError(Exception):
         self.code = err.get("code")
         self.status = err.get("status")
         super().__init__(str(details))
+
+
+def _make_api_error(
+    code: int, status: str, retry_delay: str | None = None
+) -> "Exception":
+    """Build a real google.genai.errors.APIError subclass for isinstance checks.
+
+    ClientError covers 4xx (including 429 quota); ServerError covers 5xx.
+    """
+    from google.genai import errors as _genai_errors
+
+    details_list: list[dict] = []
+    if retry_delay is not None:
+        details_list.append(
+            {
+                "@type": "type.googleapis.com/google.rpc.RetryInfo",
+                "retryDelay": retry_delay,
+            }
+        )
+    response_json = {
+        "error": {
+            "code": code,
+            "status": status,
+            "details": details_list,
+        }
+    }
+    cls = _genai_errors.ClientError if 400 <= code < 500 else _genai_errors.ServerError
+    return cls(code, response_json, response=None)
 
 
 def test_parse_retry_delay_parses_seconds_suffix():
@@ -462,3 +495,105 @@ def test_extract_retry_delay_handles_malformed_details():
 def test_retry_delay_cap_is_at_most_65_seconds():
     """The pipeline shouldn't wait more than 65s for a single retry."""
     assert _RETRY_DELAY_CAP_SECONDS <= 65.0
+
+
+# ---------------- quota-exhausted latch ----------------
+
+
+class _StubClient:
+    """Minimal stand-in for google.genai.Client used by AsyncGeminiClient."""
+
+    def __init__(self, errors: list[Exception], responses: list[str]) -> None:
+        self._errors = list(errors)
+        self._responses = list(responses)
+        self.calls = 0
+        # Build the nested aio.models namespace expected by the code.
+        from types import SimpleNamespace
+
+        async def _generate_content(*_a, **_kw):
+            self.calls += 1
+            if self._errors:
+                raise self._errors.pop(0)
+            return SimpleNamespace(text=self._responses.pop(0))
+
+        self.aio = SimpleNamespace(
+            models=SimpleNamespace(generate_content=_generate_content)
+        )
+
+
+def _make_quota_error() -> "Exception":
+    return _make_api_error(429, "RESOURCE_EXHAUSTED", retry_delay="45s")
+
+
+async def test_quota_exhausted_latches_on_429():
+    """A 429 sets quota_exhausted; subsequent calls return None without HTTP."""
+    from daily_bot.config import Settings
+    from daily_bot.summarizer import AsyncGeminiClient
+
+    settings = Settings(
+        google_api_key="test",
+        firebase_credentials="{}",
+        sender_email="a@b.com",
+        sender_password="x" * 16,
+        gemini_retries=6,
+    )
+    stub = _StubClient(errors=[_make_quota_error()], responses=["unused"])
+    client = AsyncGeminiClient(settings)
+    client._client = stub  # type: ignore[assignment]
+
+    assert not client.quota_exhausted
+    first = await client.generate("hello")
+    assert first is None
+    assert client.quota_exhausted is True
+
+    # Second call must NOT hit the network.
+    pre = stub.calls
+    second = await client.generate("hello again")
+    post = stub.calls
+    assert second is None
+    assert pre == post, "generate() must short-circuit when quota is exhausted"
+
+
+async def test_reset_quota_exhausted_clears_latch():
+    """reset_quota_exhausted() must allow the client to make HTTP calls again."""
+    from daily_bot.config import Settings
+    from daily_bot.summarizer import AsyncGeminiClient
+
+    settings = Settings(
+        google_api_key="test",
+        firebase_credentials="{}",
+        sender_email="a@b.com",
+        sender_password="x" * 16,
+        gemini_retries=6,
+    )
+    stub = _StubClient(errors=[_make_quota_error()], responses=["ok"])
+    client = AsyncGeminiClient(settings)
+    client._client = stub  # type: ignore[assignment]
+
+    assert (await client.generate("a")) is None
+    assert client.quota_exhausted is True
+    client.reset_quota_exhausted()
+    assert client.quota_exhausted is False
+    assert (await client.generate("b")) == "ok"
+
+
+async def test_non_quota_error_does_not_latch():
+    """A 500 INTERNAL error should retry but NOT set the quota flag."""
+    from daily_bot.config import Settings
+    from daily_bot.summarizer import AsyncGeminiClient
+
+    settings = Settings(
+        google_api_key="test",
+        firebase_credentials="{}",
+        sender_email="a@b.com",
+        sender_password="x" * 16,
+        gemini_retries=2,
+    )
+    internal_err = _make_api_error(500, "INTERNAL")
+    stub = _StubClient(errors=[internal_err], responses=["ok"])
+    client = AsyncGeminiClient(settings)
+    client._client = stub  # type: ignore[assignment]
+
+    result = await client.generate("hello")
+    assert result == "ok"
+    assert client.quota_exhausted is False

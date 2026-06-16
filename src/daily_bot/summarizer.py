@@ -80,15 +80,38 @@ class AsyncGeminiClient:
     (clamped to ``_RETRY_DELAY_CAP_SECONDS``) so we don't waste retries
     by sleeping too short, or stall the pipeline by waiting 60+ seconds
     on a daily-quota exhaustion that won't recover in time.
+
+    On the first 429/RESOURCE_EXHAUSTED error the client latches a
+    ``quota_exhausted`` flag; every subsequent ``generate()`` call
+    short-circuits and returns ``None`` without making a network request.
+    This prevents a daily-quota outage from turning into hours of sleep
+    loops. The flag can be cleared with ``reset_quota_exhausted()`` once
+    the user knows the quota has been refilled.
     """
 
     def __init__(self, settings: Settings) -> None:
         self._client = _genai.Client(api_key=settings.google_api_key)
         self._model = settings.gemini_model
         self._retries = settings.gemini_retries
+        self._quota_exhausted: bool = False
+
+    @property
+    def quota_exhausted(self) -> bool:
+        """True once a 429/RESOURCE_EXHAUSTED error has been seen."""
+        return self._quota_exhausted
+
+    def reset_quota_exhausted(self) -> None:
+        """Clear the quota-exhausted latch (e.g. after a manual quota reset)."""
+        self._quota_exhausted = False
 
     async def generate(self, prompt: str) -> str | None:
-        """Generate text from a prompt with retries. Returns None on failure."""
+        """Generate text from a prompt with retries. Returns None on failure.
+
+        If the quota-exhausted latch is set, this returns ``None``
+        immediately without making a network request.
+        """
+        if self._quota_exhausted:
+            return None
         for attempt in range(1, self._retries + 1):
             try:
                 response = await self._client.aio.models.generate_content(
@@ -108,10 +131,24 @@ class AsyncGeminiClient:
                     or "RESOURCE_EXHAUSTED" in str(status)
                     or "QUOTA" in str(status).upper()
                 )
-                api_delay = _extract_retry_delay(exc) if is_quota else None
-                fallback_delay = 2 * attempt
-                wait = api_delay if api_delay is not None else fallback_delay
-                wait = min(wait, _RETRY_DELAY_CAP_SECONDS)
+                if is_quota:
+                    # Latch the flag; every later call returns None instantly.
+                    self._quota_exhausted = True
+                    api_delay = _extract_retry_delay(exc)
+                    logger.error(
+                        "Gemini quota exhausted (attempt %d/%d, code=%s, status=%s): %s. "
+                        "All subsequent calls in this run will short-circuit. "
+                        "Suggested retry delay from API: %ss",
+                        attempt,
+                        self._retries,
+                        code,
+                        status,
+                        str(exc)[:160],
+                        f"{api_delay:.1f}" if api_delay is not None else "n/a",
+                    )
+                    return None
+                # Non-quota error: exponential backoff, no latch.
+                wait = 2 * attempt
                 logger.warning(
                     "Gemini API error (attempt %d/%d, code=%s, status=%s): %s "
                     "-- sleeping %.1fs before retry",
