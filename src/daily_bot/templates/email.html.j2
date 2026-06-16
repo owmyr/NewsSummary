@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>The Daily Bot</title>
+  <style>
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+
+    body {
+      margin: 0; padding: 0;
+      background-color: {{ theme.bg_color }};
+      font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    }
+    .container {
+      width: 100%; max-width: 600px; margin: 0 auto;
+      background-color: {{ theme.bg_color }};
+    }
+    .card {
+      background-color: {{ theme.card_bg }};
+      border-radius: 16px; overflow: hidden; margin-bottom: 24px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    }
+    .header {
+      background-color: {{ theme.primary }}; color: #ffffff;
+      padding: 30px 20px; text-align: center;
+      border-radius: 0 0 24px 24px; margin-bottom: 30px;
+    }
+    .h1 {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 28px; font-weight: normal; margin: 0 0 10px 0;
+      letter-spacing: -0.5px;
+    }
+    .date {
+      font-size: 14px; text-transform: uppercase; letter-spacing: 2px;
+      opacity: 0.9; font-weight: bold;
+    }
+    .article-img {
+      width: 100%; height: auto; display: block; background-color: #eee;
+    }
+    .content { padding: 25px; }
+    .headline {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 22px; color: {{ theme.text_dark }};
+      margin: 0 0 12px 0; line-height: 1.3;
+      text-decoration: none; display: block; font-weight: bold;
+    }
+    .summary {
+      color: {{ theme.text_light }}; font-size: 16px; line-height: 1.6;
+      margin: 0 0 20px 0;
+    }
+    .category {
+      display: inline-block;
+      font-size: 11px; text-transform: uppercase; letter-spacing: 1.5px;
+      color: {{ theme.primary_dark }}; font-weight: bold;
+      margin-bottom: 12px;
+    }
+    .button {
+      display: inline-block; padding: 10px 20px;
+      background-color: {{ theme.primary }}; color: #ffffff;
+      text-decoration: none; border-radius: 50px;
+      font-weight: bold; font-size: 14px;
+    }
+    .footer {
+      text-align: center; padding: 20px;
+      color: {{ theme.text_light }}; font-size: 12px;
+    }
+    .unsubscribe { color: {{ theme.text_light }}; text-decoration: underline; }
+    .source-badge {
+      display: inline-block;
+      font-size: 11px; font-weight: 700;
+      padding: 3px 10px; border-radius: 12px;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 8px; margin-right: 8px;
+      vertical-align: middle;
+    }
+    .source-badge.bbc { background-color: #bb1919; color: #ffffff; }
+    .source-badge.g1 { background-color: #c4170c; color: #ffffff; }
+    .source-section-header {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-size: 20px; color: {{ theme.primary_dark }};
+      margin: 30px 0 16px 0; padding-bottom: 8px;
+      border-bottom: 2px solid {{ theme.primary }};
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div style="font-size: 40px; margin-bottom: 10px;">&#10024;</div>
+      <h1 class="h1">The Daily Bot.</h1>
+      <div class="date">{{ today_date }}</div>
+    </div>
+
+    {% if has_articles %}
+      {% set sources_present = articles | map(attribute='source') | unique | list %}
+      {% if sources_present | length > 1 %}
+        {% for source in sources_present %}
+          <div class="source-section-header">
+            {% if source == 'bbc' %}BBC News{% elif source == 'g1' %}G1 — O portal de notícias da Globo{% else %}{{ source | upper }}{% endif %}
+          </div>
+          {% for article in articles if article.source == source %}
+            <div class="card">
+              <a href="{{ article.url }}">
+                <img src="{{ article.image_src }}" alt="Article Image" class="article-img" width="600">
+              </a>
+              <div class="content">
+                <span class="source-badge {{ article.source }}">
+                  {% if article.source == 'bbc' %}BBC{% elif article.source == 'g1' %}G1{% else %}{{ article.source | upper }}{% endif %}
+                </span>
+                {% if article.category %}
+                  <div class="category">{{ article.category }}</div>
+                {% endif %}
+                <a href="{{ article.url }}" class="headline">{{ article.title }}</a>
+                <p class="summary">{{ article.summary }}</p>
+                <a href="{{ article.url }}" class="button">
+                  {% if article.source == 'g1' %}Ler no G1 &rarr;{% else %}Read on {{ article.source | upper }} &rarr;{% endif %}
+                </a>
+              </div>
+            </div>
+          {% endfor %}
+        {% endfor %}
+      {% else %}
+        {% for article in articles %}
+          <div class="card">
+            <a href="{{ article.url }}">
+              <img src="{{ article.image_src }}" alt="Article Image" class="article-img" width="600">
+            </a>
+            <div class="content">
+              {% if article.source %}
+                <span class="source-badge {{ article.source }}">
+                  {% if article.source == 'bbc' %}BBC{% elif article.source == 'g1' %}G1{% else %}{{ article.source | upper }}{% endif %}
+                </span>
+              {% endif %}
+              {% if article.category %}
+                <div class="category">{{ article.category }}</div>
+              {% endif %}
+              <a href="{{ article.url }}" class="headline">{{ article.title }}</a>
+              <p class="summary">{{ article.summary }}</p>
+              <a href="{{ article.url }}" class="button">
+                {% if article.source == 'g1' %}Ler no G1 &rarr;{% else %}Read on {{ article.source | upper }} &rarr;{% endif %}
+              </a>
+            </div>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% else %}
+      <div class="card">
+        <div class="content" style="text-align: center;">
+          <p class="summary">No news summaries were generated today.</p>
+        </div>
+      </div>
+    {% endif %}
+
+    <div class="footer">
+      <p>Generated by AI &bull; Curated for You</p>
+      <p>
+        <a href="https://thedailybot.web.app/unsubscribe.html" class="unsubscribe">Unsubscribe</a>
+      </p>
+      <p style="margin-top: 20px; opacity: 0.5;">Built by Owmyr</p>
+    </div>
+  </div>
+</body>
+</html>

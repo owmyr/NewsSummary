@@ -8,9 +8,9 @@
   <link rel="icon" href="https://placehold.co/32x32/709775/ffffff?text=✨">
 
   <meta property="og:title" content="The Daily Bot • Morning BBC Digest" />
-  <meta property="og:description" content="AI-powered summaries of the top BBC stories. One email, every morning. No spam." />
+  <meta property="og:description" content="AI-powered summaries of the top BBC and G1 stories, in your inbox every morning. No spam." />
   <meta property="og:image" content="https://placehold.co/1200x630/709775/ffffff?text=The+Daily+Bot" />
-  <meta property="og:url" content="https://YOUR-NEW-NAME.web.app" />
+  <meta property="og:url" content="https://thedailybot.web.app" />
   <meta name="twitter:card" content="summary_large_image" />
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -111,6 +111,18 @@
                     Subscribe
                 </button>
             </div>
+            <div class="flex flex-wrap items-center justify-center gap-x-6 gap-y-2 mt-5 text-sm text-stone-500">
+                <label class="flex items-center gap-2 cursor-pointer hover:text-stone-dark transition-colors">
+                    <input type="checkbox" name="sources" value="bbc" checked
+                           class="w-4 h-4 accent-brand-sage cursor-pointer">
+                    <span>BBC News <span class="text-xs text-stone-400">(English)</span></span>
+                </label>
+                <label class="flex items-center gap-2 cursor-pointer hover:text-stone-dark transition-colors">
+                    <input type="checkbox" name="sources" value="g1"
+                           class="w-4 h-4 accent-brand-sage cursor-pointer">
+                    <span>G1 <span class="text-xs text-stone-400">(Português)</span></span>
+                </label>
+            </div>
             <div id="message-area" class="absolute -bottom-8 left-0 w-full text-center text-xs font-bold text-stone-400">
                 </div>
         </form>
@@ -170,6 +182,7 @@
   <script>
     const ADD_SUBSCRIBER_URL = "https://addsubscriber-3rfg7yfdma-uc.a.run.app";
     const LATEST_NEWS_URL = "https://us-central1-news-summary-3baaa.cloudfunctions.net/latestNews";
+    const CANONICAL_SITE = "https://thedailybot.web.app";
 
     // --- DATE SETUP ---
     const dateOpts = { weekday: 'long', month: 'long', day: 'numeric' };
@@ -217,12 +230,18 @@
                 // 2. Use Real Image if available, otherwise Fallback
                 const realImage = (art.image_url && art.image_url.startsWith('http')) ? art.image_url : fallbackUrl;
 
+                const source = art.source || 'bbc';
+                const sourceBadge = source === 'g1'
+                    ? '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-600 text-white uppercase tracking-wider mb-2 self-start">G1</span>'
+                    : '<span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-700 text-white uppercase tracking-wider mb-2 self-start">BBC</span>';
+
                 card.innerHTML = `
-                    <div class="aspect-[4/3] w-full overflow-hidden rounded-2xl mb-5 bg-stone-50 relative">
+                    <div class="aspect-[4/3] w-full overflow-hidden rounded-2xl mb-3 bg-stone-50 relative">
                         <img src="${realImage}" 
                              onerror="this.onerror=null;this.src='${fallbackUrl}';"
                              class="w-full h-full object-cover group-hover:scale-105 transition-transform duration-700">
                     </div>
+                    ${sourceBadge}
                     <div class="flex-1 flex flex-col">
                         <h3 class="font-serif text-xl leading-snug mb-3 group-hover:text-brand-sage transition-colors">
                             <a href="${art.url}" target="_blank">${art.title || 'Untitled'}</a>
@@ -253,12 +272,19 @@
         const originalText = btn.innerText;
         btn.disabled = true;
         btn.innerText = "Joining...";
-        
+
+        const checkedSources = Array.from(document.querySelectorAll('input[name="sources"]:checked'))
+            .map(cb => cb.value);
+        const sources = checkedSources.length > 0 ? checkedSources : ['bbc'];
+
         try {
             const res = await fetch(ADD_SUBSCRIBER_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ email: emailInput.value.trim() })
+                body: JSON.stringify({
+                    email: emailInput.value.trim(),
+                    sources: sources,
+                })
             });
             const data = await res.json();
             

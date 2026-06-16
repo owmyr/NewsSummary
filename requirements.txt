@@ -1,5 +1,8 @@
-google-generativeai
+google-genai
 python-dotenv
-requests
+httpx
 beautifulsoup4
 firebase-admin
+pydantic
+pydantic-settings
+jinja2
