@@ -100,6 +100,7 @@ async def _process_one(
             article.title,
             settings,
             language=source.language,
+            url=url,
         )
     except Exception:
         logger.exception("Summarization crashed for %s", url)
@@ -231,7 +232,12 @@ async def _retry_failed_articles(
                 continue
             try:
                 new_summary = await summarize_article(
-                    gemini, article.content, article.title, settings, language=source.language
+                    gemini,
+                    article.content,
+                    article.title,
+                    settings,
+                    language=source.language,
+                    url=f.url,
                 )
             except Exception:
                 logger.exception("Re-summarize crashed for %s", f.url)

@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         default="bbc",
         description="Comma-separated list of news source names to process",
     )
-    article_limit: int = Field(default=5, description="Number of articles to process per source")
+    article_limit: int = Field(default=4, description="Number of articles to process per source")
 
     gemini_model: str = Field(default="gemini-2.5-flash", description="Gemini model name")
     gemini_retries: int = Field(

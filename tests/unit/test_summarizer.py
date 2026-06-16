@@ -15,6 +15,7 @@ from daily_bot.summarizer import (
     _parse_retry_delay_seconds,
     _validate_category,
     chunk_text,
+    classify_article,
     clean_article_text,
     summarize_article,
 )
@@ -121,7 +122,7 @@ def test_category_prompt_includes_categories():
 
 
 async def test_summarize_uses_chunk_phase_when_chunks_exist(test_settings: Settings):
-    """With multiple chunks, summarize should call generate_many + final + category."""
+    """With multiple chunks, summarize should call generate_many + final (no category call)."""
     from tests.conftest import FakeGeminiClient
 
     # 1500 words at max_words=600 produces 3 chunks
@@ -131,15 +132,23 @@ async def test_summarize_uses_chunk_phase_when_chunks_exist(test_settings: Setti
             "Partial two.",  # chunk 2
             "Partial three.",  # chunk 3
             "Final combined summary.",  # final merge
-            "world",  # category
         ]
     )
 
     article = "word " * 1500
-    summary = await summarize_article(fake, article, "Test Title", test_settings)
+    summary = await summarize_article(
+        fake,
+        article,
+        "Test Title",
+        test_settings,
+        url="https://www.bbc.com/news/world/articles/abc",
+    )
     assert summary.title == "Test Title"
     assert summary.summary == "Final combined summary."
+    # Category now comes from the URL, not from Gemini.
     assert summary.category == "world"
+    # 3 chunk calls + 1 final = 4 calls; no category call.
+    assert len(fake.calls) == 4
 
 
 async def test_summarize_falls_back_to_single_shot(test_settings: Settings):
@@ -152,41 +161,44 @@ async def test_summarize_falls_back_to_single_shot(test_settings: Settings):
             None,  # chunk 2 -> None
             None,  # chunk 3 -> None
             "Fallback summary worked.",  # fallback call
-            "tech",  # category
         ]
     )
     article = "word " * 1500
-    summary = await summarize_article(fake, article, "Test Title", test_settings)
+    summary = await summarize_article(
+        fake,
+        article,
+        "Test Title",
+        test_settings,
+        url="https://www.bbc.com/news/technology/articles/abc",
+    )
     assert summary.summary == "Fallback summary worked."
+    # Category comes from URL (no Gemini call made for it).
     assert summary.category == "tech"
 
 
-async def test_summarize_handles_short_article(test_settings: Settings):
-    """A short article should produce a single chunk + final + category."""
+async def test_summarize_short_article_uses_single_call(test_settings: Settings):
+    """A short article (<= 1 chunk) should use exactly one API call (the fallback)."""
     from tests.conftest import FakeGeminiClient
 
-    fake = FakeGeminiClient(
-        responses=[
-            "Chunk summary of the short article.",  # chunk 1 (only 1 chunk)
-            "Final combined summary of the short article.",  # final merge
-            "health",  # category
-        ]
+    fake = FakeGeminiClient(responses=["Summary from fallback."])
+    summary = await summarize_article(
+        fake,
+        "Short text.",
+        "Title",
+        test_settings,
+        url="https://www.bbc.com/news/health/articles/abc",
     )
-    summary = await summarize_article(fake, "Short text.", "Title", test_settings)
+    assert summary.summary == "Summary from fallback."
     assert summary.category == "health"
+    # Short article = exactly 1 API call (no chunk, no final, no category call).
+    assert len(fake.calls) == 1
 
 
 async def test_summarize_invalid_category_becomes_other(test_settings: Settings):
-    """A non-allowlisted category response should map to 'other'."""
+    """No URL + no keyword-matching title -> category defaults to 'other'."""
     from tests.conftest import FakeGeminiClient
 
-    fake = FakeGeminiClient(
-        responses=[
-            "Chunk summary.",  # chunk 1
-            "Final combined summary.",  # final merge
-            "celebrity gossip",  # category -> invalid -> 'other'
-        ]
-    )
+    fake = FakeGeminiClient(responses=["Summary."])
     summary = await summarize_article(fake, "article text", "Title", test_settings)
     assert summary.category == "other"
 
@@ -251,7 +263,7 @@ def test_fallback_prompt_with_en_has_no_portuguese_instruction():
 
 async def test_summarize_with_pt_br_language(test_settings: Settings):
     """When language='pt-BR', every chunk/final/fallback prompt should include
-    the Portuguese instruction.
+    the Portuguese instruction. Category is now deterministic (URL-based).
     """
     from tests.conftest import FakeGeminiClient
 
@@ -261,29 +273,31 @@ async def test_summarize_with_pt_br_language(test_settings: Settings):
             "Resumo parcial dois.",  # chunk 2
             "Resumo parcial tres.",  # chunk 3
             "Resumo final coerente.",  # final merge
-            "world",  # category (English; validated against English allowlist)
         ]
     )
     article = "word " * 1500
     summary = await summarize_article(
-        fake, article, "Titulo Teste", test_settings, language="pt-BR"
+        fake,
+        article,
+        "Titulo Teste",
+        test_settings,
+        language="pt-BR",
+        url="https://g1.globo.com/politica/noticia/2026/06/16/artigo.ghtml",
     )
     assert summary.title == "Titulo Teste"
     assert summary.summary == "Resumo final coerente."
-    assert summary.category == "world"
-    # All prompts except the category prompt should include the Portuguese
-    # instruction. The category prompt is intentionally English (validated
-    # against the English VALID_CATEGORIES allowlist).
+    assert summary.category == "politics"
+    # All Gemini calls are summary prompts (chunks + final). No category call
+    # is made anymore. Every summary prompt should include the Portuguese
+    # instruction.
     assert fake.calls, "FakeGeminiClient should have recorded at least one call"
-    summary_prompts = fake.calls[:-1]  # exclude the category prompt
-    assert summary_prompts, "Expected at least one summary prompt"
-    for prompt in summary_prompts:
+    for prompt in fake.calls:
         assert "português" in prompt.lower(), f"Prompt missing Portuguese instruction: {prompt!r}"
 
 
 async def test_summarize_with_en_language_unchanged(test_settings: Settings):
     """When language='en' (default), prompts should NOT include the Portuguese
-    instruction and behavior matches the previous implementation.
+    instruction. Category is deterministic (URL-based), not from Gemini.
     """
     from tests.conftest import FakeGeminiClient
 
@@ -293,11 +307,17 @@ async def test_summarize_with_en_language_unchanged(test_settings: Settings):
             "Partial two.",  # chunk 2
             "Partial three.",  # chunk 3
             "Final combined summary.",  # final merge
-            "world",  # category
         ]
     )
     article = "word " * 1500
-    summary = await summarize_article(fake, article, "Test Title", test_settings, language="en")
+    summary = await summarize_article(
+        fake,
+        article,
+        "Test Title",
+        test_settings,
+        language="en",
+        url="https://www.bbc.com/news/world/articles/abc",
+    )
     assert summary.summary == "Final combined summary."
     assert summary.category == "world"
     for prompt in fake.calls:
@@ -314,7 +334,6 @@ async def test_summarize_default_language_is_english(test_settings: Settings):
             "Partial two.",
             "Partial three.",
             "Final combined summary.",
-            "tech",
         ]
     )
     article = "word " * 1500
@@ -334,20 +353,18 @@ async def test_pt_br_prompt_includes_portuguese_instruction(test_settings: Setti
             "Chunk 2",
             "Chunk 3",
             "Final",
-            "world",
         ]
     )
     await summarize_article(fake, "word " * 1500, "Title", test_settings, language="pt-BR")
-    # Every summary prompt (chunk + final) should include the Portuguese
-    # instruction. The category prompt is intentionally left in English.
-    summary_prompts = fake.calls[:-1]
-    assert any("português" in p.lower() for p in summary_prompts)
-    assert all("português" in p.lower() for p in summary_prompts)
+    # Every prompt (chunk + final) is now a summary prompt; no category call.
+    assert any("português" in p.lower() for p in fake.calls)
+    assert all("português" in p.lower() for p in fake.calls)
 
 
 async def test_pt_br_summary_returned_correctly(test_settings: Settings):
     """Full integration: FakeGeminiClient returns a Portuguese summary, and the
     Summary object is constructed correctly with the Portuguese text.
+    Category comes from the URL (deterministic), not from Gemini.
     """
     from tests.conftest import FakeGeminiClient
 
@@ -358,20 +375,22 @@ async def test_pt_br_summary_returned_correctly(test_settings: Settings):
             "Os mercados reagiram positivamente a noticia.",  # chunk 3
             "O governo brasileiro anunciou novas medidas economicas hoje, "
             "decisao tomada apos semanas de debate no congresso.",  # final
-            "politics",  # category (English word validated against allowlist)
         ]
     )
     article = "word " * 1500
     summary = await summarize_article(
-        fake, article, "Governo anuncia medidas", test_settings, language="pt-BR"
+        fake,
+        article,
+        "Governo anuncia medidas",
+        test_settings,
+        language="pt-BR",
+        url="https://g1.globo.com/politica/noticia/2026/06/16/artigo.ghtml",
     )
     assert summary.title == "Governo anuncia medidas"
     assert "governo brasileiro" in summary.summary.lower()
     assert summary.category == "politics"
-    # All summary prompts (chunk + final) should be in Portuguese mode. The
-    # category prompt is intentionally left in English.
-    summary_prompts = fake.calls[:-1]
-    assert all("português" in p.lower() for p in summary_prompts)
+    # All Gemini prompts (chunks + final) are in Portuguese mode.
+    assert all("português" in p.lower() for p in fake.calls)
 
 
 async def test_pt_br_fallback_path_uses_portuguese_instruction(test_settings: Settings):
@@ -386,7 +405,6 @@ async def test_pt_br_fallback_path_uses_portuguese_instruction(test_settings: Se
             None,  # chunk 2 -> None
             None,  # chunk 3 -> None
             "Resumo de fallback em portugues.",  # fallback
-            "world",  # category
         ]
     )
     article = "word " * 1500
@@ -495,6 +513,181 @@ def test_extract_retry_delay_handles_malformed_details():
 def test_retry_delay_cap_is_at_most_65_seconds():
     """The pipeline shouldn't wait more than 65s for a single retry."""
     assert _RETRY_DELAY_CAP_SECONDS <= 65.0
+
+
+# ---------------- deterministic classifier ----------------
+
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        # BBC URL patterns
+        ("https://www.bbc.com/news/politics/articles/abc", "politics"),
+        ("https://www.bbc.com/news/uk-politics/articles/abc", "politics"),
+        ("https://www.bbc.com/news/world/articles/abc", "world"),
+        ("https://www.bbc.com/news/business/articles/abc", "business"),
+        ("https://www.bbc.com/news/technology/articles/abc", "tech"),
+        ("https://www.bbc.com/news/science/articles/abc", "science"),
+        ("https://www.bbc.com/news/health/articles/abc", "health"),
+        ("https://www.bbc.com/news/uk/articles/abc", "uk"),
+        ("https://www.bbc.com/news/europe/articles/abc", "europe"),
+        # G1 URL patterns
+        ("https://g1.globo.com/politica/noticia/2026/06/16/x.ghtml", "politics"),
+        ("https://g1.globo.com/economia/noticia/2026/06/16/x.ghtml", "business"),
+        ("https://g1.globo.com/tecnologia/noticia/2026/06/16/x.ghtml", "tech"),
+        ("https://g1.globo.com/ciencia-e-saude/noticia/2026/06/16/x.ghtml", "science"),
+        ("https://g1.globo.com/saude/noticia/2026/06/16/x.ghtml", "health"),
+        ("https://g1.globo.com/mundo/noticia/2026/06/16/x.ghtml", "world"),
+        ("https://g1.globo.com/internacional/noticia/2026/06/16/x.ghtml", "world"),
+    ],
+)
+def test_classify_article_url_patterns(url: str, expected: str):
+    """URL pattern matching covers the major BBC and G1 sections."""
+    assert classify_article(title="Some article", url=url) == expected
+
+
+def test_classify_article_url_takes_priority_over_title():
+    """When both URL and title match, the URL wins."""
+    # Title suggests "tech" but URL clearly says "world"
+    result = classify_article(
+        title="New AI startup launches product",
+        url="https://www.bbc.com/news/world/articles/abc",
+    )
+    assert result == "world"
+
+
+@pytest.mark.parametrize(
+    "title,expected",
+    [
+        ("Government announces new policy", "politics"),
+        ("Prime minister addresses parliament", "politics"),
+        ("Stock market crashes amid inflation", "business"),
+        ("New AI startup raises funding", "tech"),
+        ("NASA launches new space telescope", "science"),
+        ("Hospital reports new covid outbreak", "health"),
+        ("UK government unveils plan", "uk"),
+        ("European Union passes new law", "europe"),
+    ],
+)
+def test_classify_article_title_keyword_fallback(title: str, expected: str):
+    """When URL doesn't match, title keywords are tried in priority order."""
+    assert classify_article(title=title, url="") == expected
+
+
+def test_classify_article_uk_word_boundary_does_not_match_ukraine():
+    """The 'uk' keyword should not match 'Ukraine' (word boundary)."""
+    # 'ukraine' doesn't contain ' uk ' (with spaces)
+    result = classify_article(title="Ukraine war update", url="")
+    assert result != "uk"
+    # A title that mentions 'UK' as a word should match
+    result = classify_article(title="UK government acts on economy", url="")
+    assert result == "uk"
+
+
+def test_classify_article_returns_other_for_unknown():
+    """Empty input or unrecognized patterns return 'other'."""
+    assert classify_article() == "other"
+    assert classify_article(title="", url="") == "other"
+    assert classify_article(title="Lorem ipsum dolor", url="https://example.com/page") == "other"
+
+
+def test_classify_article_case_insensitive():
+    """URL and title matching are case-insensitive."""
+    assert (
+        classify_article(
+            title="GOVERNMENT ANNOUNCES POLICY", url="HTTPS://WWW.BBC.COM/NEWS/POLITICS/X"
+        )
+        == "politics"
+    )
+
+
+# ---------------- single-pass optimization ----------------
+
+
+async def test_summarize_one_chunk_uses_fallback_not_chunk_merge(test_settings: Settings):
+    """When the article produces exactly 1 chunk, the pipeline must skip the
+    chunk→merge step and go straight to the fallback prompt.
+    """
+    from tests.conftest import FakeGeminiClient
+
+    # Article fits in one chunk (< 600 words)
+    fake = FakeGeminiClient(responses=["Direct fallback summary."])
+    summary = await summarize_article(
+        fake,
+        "A " * 500,  # 500 words = 1 chunk
+        "One-chunk article",
+        test_settings,
+        url="https://www.bbc.com/news/business/articles/x",
+    )
+    assert summary.summary == "Direct fallback summary."
+    assert summary.category == "business"
+    # Exactly 1 call, not 3 (chunk + final + category)
+    assert len(fake.calls) == 1
+
+
+async def test_summarize_no_chunks_uses_fallback(test_settings: Settings):
+    """When the article is empty/short, summarize still uses the fallback path."""
+    from tests.conftest import FakeGeminiClient
+
+    # With summary_min_words default (40), 0 words = short, gets the note appended
+    fake = FakeGeminiClient(responses=["Fallback for tiny article."])
+    summary = await summarize_article(
+        fake, "tiny", "Tiny article", test_settings, url="https://example.com/x"
+    )
+    assert summary.summary == "Fallback for tiny article."
+    assert len(fake.calls) == 1
+
+
+async def test_summarize_long_article_uses_chunk_merge(test_settings: Settings):
+    """When the article produces > 1 chunk, the pipeline uses chunk→merge."""
+    from tests.conftest import FakeGeminiClient
+
+    # 1500 words = 3 chunks (with max_words=600)
+    fake = FakeGeminiClient(
+        responses=[
+            "P1",
+            "P2",
+            "P3",
+            "Merged final.",
+        ]
+    )
+    summary = await summarize_article(
+        fake,
+        "word " * 1500,
+        "Long article",
+        test_settings,
+        url="https://www.bbc.com/news/science/articles/x",
+    )
+    assert summary.summary == "Merged final."
+    assert summary.category == "science"
+    # 3 chunk calls + 1 final = 4 calls; no category call
+    assert len(fake.calls) == 4
+
+
+async def test_summarize_short_article_no_api_call_for_category(test_settings: Settings):
+    """For a short article, NO API call should be made to classify the article.
+    The category is derived deterministically from the URL.
+    """
+    from tests.conftest import FakeGeminiClient
+
+    # If summarize_article makes a category call, the second response would
+    # be popped and we'd see "world" in the second prompt. With 1 call only,
+    # the second response is never consumed.
+    fake = FakeGeminiClient(responses=["Just the summary.", "world"])
+    summary = await summarize_article(
+        fake,
+        "Short article text.",
+        "Title",
+        test_settings,
+        url="https://www.bbc.com/news/world/articles/abc",
+    )
+    assert summary.summary == "Just the summary."
+    # Category from URL ("world") matches what a Gemini call would have
+    # returned, but no second call was actually made.
+    assert summary.category == "world"
+    assert len(fake.calls) == 1
+    # The "world" scripted response was never consumed.
+    assert fake.responses == ["world"]
 
 
 # ---------------- quota-exhausted latch ----------------

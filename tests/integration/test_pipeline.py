@@ -346,12 +346,11 @@ async def test_retry_failed_only_resummarizes_failed_articles(
     )
 
     # The retry should call summarize_article for the failed URL.
-    # It needs: 1 chunk (only 1 since article is short) + 1 final + 1 category = 3 calls.
+    # Short article = 1 fallback call (no chunk, no final, no category call).
+    # Category comes from the URL ("/articles/" is a generic BBC path -> "other").
     fake_gemini = FakeGeminiClient(
         responses=[
-            "Recovered chunk",
             "Recovered final summary.",
-            "tech",
         ]
     )
 
@@ -374,7 +373,9 @@ async def test_retry_failed_only_resummarizes_failed_articles(
 
     assert "https://www.bbc.com/news/articles/bad1" in by_url
     assert by_url["https://www.bbc.com/news/articles/bad1"]["summary"] == "Recovered final summary."
-    assert by_url["https://www.bbc.com/news/articles/bad1"]["category"] == "tech"
+    # Category comes from URL: https://www.bbc.com/news/articles/... has no
+    # specific section in the path, so the deterministic classifier returns "other".
+    assert by_url["https://www.bbc.com/news/articles/bad1"]["category"] == "other"
 
 
 async def test_retry_failed_only_with_no_failures_is_a_noop(

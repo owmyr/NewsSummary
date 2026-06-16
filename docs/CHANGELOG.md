@@ -4,6 +4,19 @@ All notable changes to **Daily Bot** are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed — Stay within the Gemini free tier
+
+The pipeline now consistently fits within the free-tier daily quota (20 calls/day) for both BBC and G1 combined.
+
+- **`article_limit` default lowered from 5 to 4.** With 4 articles per source, the pipeline uses 8-16 calls/day, leaving 4-12 calls of margin.
+- **Single-pass summarization for short articles.** Articles that fit in a single chunk (≤ 600 words, the vast majority of news articles) now use the fallback prompt directly in one API call instead of the previous chunk-then-merge pipeline (two calls). This saves ~1 call per short article.
+- **Deterministic category classification.** `summarize_article()` no longer spends an API call on a cosmetic category label. `classify_article(title, url)` matches BBC and G1 URL patterns first (e.g. `/news/politics/` → "politics", `/economia/` → "business"), then falls back to title keywords. Returns `"other"` if nothing matches. Saves 1 call per article (8 calls/day with `article_limit=4`).
+- **BBC prioritized over G1.** The orchestrator already processes sources in the order they appear in `SOURCES`. With `SOURCES=bbc,g1` (the default), BBC always runs first and gets the full quota headroom. If `quota_exhausted` fires, only G1 articles are affected.
+
+### Added — Quota-exhaustion latch on the Gemini client
+
+When a 429/RESOURCE_EXHAUSTED error is observed, `AsyncGeminiClient` latches a `quota_exhausted` flag. Every subsequent `generate()` call returns `None` immediately without making a network request. This prevents a daily-quota outage from turning into hours of sleep loops. The flag can be cleared with `reset_quota_exhausted()` once the quota has been refilled. Two new properties: `client.quota_exhausted` (read-only) and `client.reset_quota_exhausted()` (clear the latch).
+
 ### Fixed — Resilient retry on Gemini 429 quota errors
 
 When the free-tier Gemini quota is exhausted mid-pipeline, some articles end up with `summary: "Summary generation failed."` This release makes the pipeline more resilient and adds a recovery path.
@@ -38,8 +51,6 @@ The Firebase Hosting site ID `thedailybot` is now the canonical public URL. The 
 
 ### Operator note
 To deploy to BOTH hosting sites (so the legacy URL doesn't get stale), temporarily change `firebase.json` to `"site": "news-summary-3baaa"`, run `firebase deploy --only hosting`, then revert. Or, simpler: keep the `thedailybot` deployment as the source of truth and re-run the same deploy with the `news-summary-3baaa` site override.
-
-## [Unreleased]
 
 ### Added — G1 News Source + Subscriber Source Preferences
 

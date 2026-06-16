@@ -283,16 +283,131 @@ def _validate_category(raw: str | None) -> str:
     return first if first in VALID_CATEGORIES else "other"
 
 
+# URL substrings → category. Order matters: first match wins. More specific
+# patterns go first so e.g. /news/uk-politics resolves to "politics" before
+# the bare /news/uk check.
+_URL_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
+    # BBC News URL patterns (www.bbc.com/news/<section>/...)
+    ("/news/uk-politics", "politics"),
+    ("/news/politics", "politics"),
+    ("/news/world", "world"),
+    ("/news/business", "business"),
+    ("/news/technology", "tech"),
+    ("/news/science", "science"),
+    ("/news/health", "health"),
+    ("/news/uk", "uk"),
+    ("/news/europe", "europe"),
+    # G1 URL patterns (g1.globo.com/<section>/noticia/...)
+    ("/g1-globo-de/", "world"),  # international edition
+    ("/ciencia-e-saude/", "science"),
+    ("/tecnologia/", "tech"),
+    ("/economia/", "business"),
+    ("/negocios/", "business"),
+    ("/mercados/", "business"),
+    ("/politica/", "politics"),
+    ("/saude/", "health"),
+    ("/mundo/", "world"),
+    ("/internacional/", "world"),
+    ("/esporte/", "other"),  # no sport category; fall through to "other"
+)
+
+# Title keywords → category. Used as a fallback when the URL doesn't match.
+# Order matters: more specific phrases AND country/region terms come first
+# so e.g. "UK government" → "uk" beats "government" → "politics".
+_TITLE_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
+    # Region/country (most specific, must beat generic politics keywords)
+    ("britain", "uk"),
+    ("british", "uk"),
+    ("england", "uk"),
+    ("scotland", "uk"),
+    ("wales", "uk"),
+    (" uk ", "uk"),
+    ("european union", "europe"),
+    ("brussels", "europe"),
+    ("europe ", "europe"),
+    (" eu ", "europe"),
+    ("eu)", "europe"),
+    # Health (specific phrases first)
+    ("covid-19", "health"),
+    ("covid", "health"),
+    ("vaccine", "health"),
+    ("vaccination", "health"),
+    ("hospital", "health"),
+    # Science
+    ("climate change", "science"),
+    ("artificial intelligence", "tech"),
+    ("machine learning", "tech"),
+    ("quantum", "science"),
+    ("nasa", "science"),
+    # Tech
+    ("startup", "tech"),
+    ("software", "tech"),
+    ("chip", "tech"),
+    # Business
+    ("stock market", "business"),
+    ("wall street", "business"),
+    ("interest rate", "business"),
+    # Politics
+    ("parliament", "politics"),
+    ("election", "politics"),
+    ("government", "politics"),
+    ("minister", "politics"),
+    ("president", "politics"),
+    ("congress", "politics"),
+    ("senate", "politics"),
+    # Generic fallbacks
+    ("inflation", "business"),
+    ("economy", "business"),
+    ("gdp", "business"),
+    ("research", "science"),
+    ("space", "science"),
+)
+
+
+def classify_article(title: str = "", url: str = "") -> str:
+    """Classify an article into one of VALID_CATEGORIES without an API call.
+
+    URL pattern matching is tried first (most reliable: BBC and G1 both
+    embed the section in the URL). Title keyword matching is a fallback.
+    Returns ``"other"`` if nothing matches.
+
+    The result is suitable for the cosmetic ``category`` field shown on
+    email article cards. It is not a substitute for full content-based
+    classification, but it never costs an API call.
+    """
+    url_lower = (url or "").lower()
+    title_lower = (title or "").lower()
+    # Pad title with spaces for safe substring matching at word boundaries
+    # (e.g. "uk " so it doesn't match "Ukraine").
+    title_padded = f" {title_lower} "
+
+    for pattern, category in _URL_CATEGORY_RULES:
+        if pattern in url_lower:
+            return category
+
+    for keyword, category in _TITLE_CATEGORY_RULES:
+        if keyword in title_padded:
+            return category
+
+    return "other"
+
+
 async def summarize_article(
     client: AsyncGeminiClient,
     article_text: str,
     title: str,
     settings: Settings,
     language: str = "en",
+    url: str = "",
 ) -> Summary:
     """Summarize an article using chunk-merge strategy with a fallback path.
 
-    All Gemini calls in the chunk phase are issued concurrently.
+    For short articles (one chunk or none) we skip the chunk-merge step
+    entirely and use the fallback prompt in a single API call. For longer
+    articles we chunk, summarize each chunk concurrently, then merge.
+
+    Category classification is deterministic (URL + title keyword matching)
+    so the pipeline does not spend an API call on a cosmetic label.
     """
     cleaned = clean_article_text(article_text or "")
     if len(cleaned.split()) < settings.summary_min_words:
@@ -300,22 +415,26 @@ async def summarize_article(
 
     chunks = chunk_text(cleaned, settings.chunk_max_words)
 
-    if chunks:
-        prompts = [_build_chunk_prompt(i, c, language) for i, c in enumerate(chunks, start=1)]
-        partials = await client.generate_many(prompts, settings.summarize_concurrency)
-        partial_summaries = [p for p in partials if p]
-    else:
-        partial_summaries = []
-
-    if not partial_summaries:
+    if len(chunks) <= 1:
+        # Short article: one call, no merge step. Saves an API call
+        # compared to the previous "chunk then merge" path.
         fallback = await client.generate(_build_fallback_prompt(title, cleaned, language))
         summary_text = fallback or "Summary generation failed."
     else:
-        combined = "\n\n".join(partial_summaries)
-        final = await client.generate(_build_final_prompt(title, combined, language))
-        summary_text = final or "Summary generation failed."
+        # Long article: chunk → merge. Chunks are summarized concurrently
+        # (bounded by summarize_concurrency).
+        prompts = [_build_chunk_prompt(i, c, language) for i, c in enumerate(chunks, start=1)]
+        partials = await client.generate_many(prompts, settings.summarize_concurrency)
+        partial_summaries = [p for p in partials if p]
+        if not partial_summaries:
+            # Chunking returned no usable partials; fall back to a single call.
+            fallback = await client.generate(_build_fallback_prompt(title, cleaned, language))
+            summary_text = fallback or "Summary generation failed."
+        else:
+            combined = "\n\n".join(partial_summaries)
+            final = await client.generate(_build_final_prompt(title, combined, language))
+            summary_text = final or "Summary generation failed."
 
-    category_raw = await client.generate(_build_category_prompt(title, summary_text))
-    category = _validate_category(category_raw)
+    category = classify_article(title=title, url=url)
 
     return Summary(title=title, summary=summary_text, category=category)

@@ -75,7 +75,7 @@ def test_settings_defaults(test_settings: Settings):
     assert test_settings.smtp_host == "smtp.gmail.com"
     assert test_settings.smtp_port == 465
     assert test_settings.bbc_news_url == "https://www.bbc.com/news"
-    assert test_settings.article_limit == 5
+    assert test_settings.article_limit == 4
     assert test_settings.gemini_model == "gemini-2.5-flash"
     assert test_settings.gemini_retries == 6
     assert test_settings.scrape_concurrency == 5
