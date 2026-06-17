@@ -710,12 +710,16 @@ class _StubClient:
         self.aio = SimpleNamespace(models=SimpleNamespace(generate_content=_generate_content))
 
 
-def _make_quota_error() -> "Exception":
-    return _make_api_error(429, "RESOURCE_EXHAUSTED", retry_delay="45s")
+def _make_quota_error(retry_delay: str = "0.01s") -> "Exception":
+    return _make_api_error(429, "RESOURCE_EXHAUSTED", retry_delay=retry_delay)
 
 
-async def test_quota_exhausted_latches_on_429():
-    """A 429 sets quota_exhausted; subsequent calls return None without HTTP."""
+async def test_first_429_does_not_latch():
+    """A single 429 retries once and recovers; no latch.
+
+    This prevents a transient per-minute burst from killing the entire
+    run while still capping burn when the daily cap is hit.
+    """
     from daily_bot.config import Settings
     from daily_bot.summarizer import AsyncGeminiClient
 
@@ -726,14 +730,43 @@ async def test_quota_exhausted_latches_on_429():
         sender_password="x" * 16,
         gemini_retries=6,
     )
-    stub = _StubClient(errors=[_make_quota_error()], responses=["unused"])
+    # First call raises 429; second call (the retry) returns "ok".
+    stub = _StubClient(errors=[_make_quota_error()], responses=["ok"])
     client = AsyncGeminiClient(settings)
     client._client = stub  # type: ignore[assignment]
 
     assert not client.quota_exhausted
+    result = await client.generate("hello")
+    assert result == "ok"
+    # 2 HTTP calls (1 initial + 1 retry after the 429), no latch.
+    assert stub.calls == 2
+    assert client.quota_exhausted is False
+
+
+async def test_quota_exhausted_latches_on_second_consecutive_429():
+    """Two consecutive 429s set quota_exhausted; subsequent calls short-circuit."""
+    from daily_bot.config import Settings
+    from daily_bot.summarizer import AsyncGeminiClient
+
+    settings = Settings(
+        google_api_key="test",
+        firebase_credentials="{}",
+        sender_email="a@b.com",
+        sender_password="x" * 16,
+        gemini_retries=6,
+    )
+    # First call: 429, retry. Second call: 429, latch.
+    stub = _StubClient(
+        errors=[_make_quota_error(), _make_quota_error()],
+        responses=["unused"],
+    )
+    client = AsyncGeminiClient(settings)
+    client._client = stub  # type: ignore[assignment]
+
     first = await client.generate("hello")
     assert first is None
     assert client.quota_exhausted is True
+    assert stub.calls == 2  # 1 initial + 1 retry
 
     # Second call must NOT hit the network.
     pre = stub.calls
@@ -755,7 +788,10 @@ async def test_reset_quota_exhausted_clears_latch():
         sender_password="x" * 16,
         gemini_retries=6,
     )
-    stub = _StubClient(errors=[_make_quota_error()], responses=["ok"])
+    stub = _StubClient(
+        errors=[_make_quota_error(), _make_quota_error()],
+        responses=["ok"],
+    )
     client = AsyncGeminiClient(settings)
     client._client = stub  # type: ignore[assignment]
 
@@ -786,3 +822,32 @@ async def test_non_quota_error_does_not_latch():
     result = await client.generate("hello")
     assert result == "ok"
     assert client.quota_exhausted is False
+
+
+async def test_first_429_recovers_within_retry_budget():
+    """Real exhaustion may eventually latch; verify the retry doesn't waste calls."""
+    from daily_bot.config import Settings
+    from daily_bot.summarizer import AsyncGeminiClient
+
+    settings = Settings(
+        google_api_key="test",
+        firebase_credentials="{}",
+        sender_email="a@b.com",
+        sender_password="x" * 16,
+        # Only 2 retries total -> attempt 1 = first call, attempt 2 = first
+        # quota retry. With 2 retries the second 429 latches (attempt 2 is
+        # not == 1 so the latch branch fires).
+        gemini_retries=2,
+    )
+    stub = _StubClient(
+        errors=[_make_quota_error(), _make_quota_error()],
+        responses=["unused"],
+    )
+    client = AsyncGeminiClient(settings)
+    client._client = stub  # type: ignore[assignment]
+
+    result = await client.generate("hello")
+    assert result is None
+    assert client.quota_exhausted is True
+    # Exactly 2 HTTP calls: 1 + 1 retry. The latch prevents any further calls.
+    assert stub.calls == 2

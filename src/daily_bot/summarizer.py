@@ -107,8 +107,14 @@ class AsyncGeminiClient:
     async def generate(self, prompt: str) -> str | None:
         """Generate text from a prompt with retries. Returns None on failure.
 
-        If the quota-exhausted latch is set, this returns ``None``
-        immediately without making a network request.
+        Quota error policy: on the *first* 429/RESOURCE_EXHAUSTED we retry
+        once after the API-suggested delay (clamped to
+        ``_RETRY_DELAY_CAP_SECONDS``). A *second* consecutive quota error
+        is a strong signal of real daily exhaustion, so we latch the
+        ``quota_exhausted`` flag and every later call in this run returns
+        ``None`` immediately without making a network request. This
+        prevents a per-minute burst from killing the entire run while
+        still capping the burn when the daily cap is hit.
         """
         if self._quota_exhausted:
             return None
@@ -132,9 +138,28 @@ class AsyncGeminiClient:
                     or "QUOTA" in str(status).upper()
                 )
                 if is_quota:
-                    # Latch the flag; every later call returns None instantly.
-                    self._quota_exhausted = True
                     api_delay = _extract_retry_delay(exc)
+                    if attempt == 1 and self._retries >= 2:
+                        # First quota error: wait the API-suggested delay
+                        # (capped) and try once more. A second 429 will
+                        # latch below.
+                        wait = api_delay if api_delay is not None else _RETRY_DELAY_CAP_SECONDS
+                        wait = min(wait, _RETRY_DELAY_CAP_SECONDS)
+                        logger.warning(
+                            "Gemini quota error (attempt %d/%d, code=%s, status=%s): %s "
+                            "-- sleeping %.1fs before retry",
+                            attempt,
+                            self._retries,
+                            code,
+                            status,
+                            str(exc)[:160],
+                            wait,
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    # Second (or later) consecutive quota error: real
+                    # daily exhaustion. Latch and bail.
+                    self._quota_exhausted = True
                     logger.error(
                         "Gemini quota exhausted (attempt %d/%d, code=%s, status=%s): %s. "
                         "All subsequent calls in this run will short-circuit. "
