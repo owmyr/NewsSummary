@@ -440,6 +440,17 @@ async def summarize_article(
 
     chunks = chunk_text(cleaned, settings.chunk_max_words)
 
+    if not chunks:
+        # Defensive: chunk_text returns [] only if cleaned is empty, which
+        # the summary_min_words guard above should prevent. If a future
+        # config change (e.g. summary_min_words=0) ever makes this reachable,
+        # don't send Gemini a prompt asking it to summarize a meta-note.
+        return Summary(
+            title=title,
+            summary="Summary generation failed.",
+            category=classify_article(title=title, url=url),
+        )
+
     if len(chunks) <= 1:
         # Short article: one call, no merge step. Saves an API call
         # compared to the previous "chunk then merge" path.

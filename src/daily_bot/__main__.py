@@ -245,7 +245,10 @@ async def _retry_failed_articles(
                 continue
             new_summary.source = f.source or source.name
             new_summary.url = f.url
-            new_summary.image_url = f.image_url
+            # Prefer the freshly-scraped image; fall back to the stored
+            # one if the new scrape didn't return an image. Mirrors
+            # the normal-mode behavior on line 111.
+            new_summary.image_url = article.image_url or f.image_url or ""
             # Only replace if the new attempt actually produced something
             if (new_summary.summary or "").strip() and new_summary.summary != FAILED_PLACEHOLDER:
                 succeeded.append(new_summary)

@@ -376,6 +376,14 @@ async def test_retry_failed_only_resummarizes_failed_articles(
     # Category comes from URL: https://www.bbc.com/news/articles/... has no
     # specific section in the path, so the deterministic classifier returns "other".
     assert by_url["https://www.bbc.com/news/articles/bad1"]["category"] == "other"
+    # The pre-seeded article had image_url="". The re-scrape should have
+    # picked up the og:image from the article HTML
+    # (https://ichef.bbci.co.uk/news/1024/hero.jpg). The retry path must
+    # use the FRESH image, not the stale empty one.
+    assert (
+        by_url["https://www.bbc.com/news/articles/bad1"]["image_url"]
+        == "https://ichef.bbci.co.uk/news/1024/hero.jpg"
+    )
 
 
 async def test_retry_failed_only_with_no_failures_is_a_noop(

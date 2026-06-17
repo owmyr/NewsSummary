@@ -688,6 +688,33 @@ async def test_summarize_short_article_no_api_call_for_category(test_settings: S
     assert fake.responses == ["world"]
 
 
+async def test_summarize_empty_chunks_returns_failed_summary(test_settings: Settings, monkeypatch):
+    """If chunk_text returns [] (e.g. summary_min_words=0 with empty input),
+    summarize must return a failed summary WITHOUT calling Gemini at all.
+    """
+    from tests.conftest import FakeGeminiClient
+
+    # Allow the test to bypass the summary_min_words guard so we can hit
+    # the empty-chunks path.
+    test_settings.summary_min_words = 0
+    monkeypatch.setattr(
+        "daily_bot.summarizer.chunk_text",
+        lambda text, max_words: [],
+    )
+    fake = FakeGeminiClient(responses=["unused"])
+    summary = await summarize_article(
+        fake,
+        "word " * 1500,
+        "Test Title",
+        test_settings,
+        url="https://www.bbc.com/news/world/articles/abc",
+    )
+    assert summary.summary == "Summary generation failed."
+    assert summary.category == "world"  # from URL
+    # No Gemini calls should have been made.
+    assert fake.calls == []
+
+
 # ---------------- quota-exhausted latch ----------------
 
 
