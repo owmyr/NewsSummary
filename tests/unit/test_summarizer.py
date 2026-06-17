@@ -435,9 +435,7 @@ class _FakeAPIError(Exception):
         super().__init__(str(details))
 
 
-def _make_api_error(
-    code: int, status: str, retry_delay: str | None = None
-) -> "Exception":
+def _make_api_error(code: int, status: str, retry_delay: str | None = None) -> "Exception":
     """Build a real google.genai.errors.APIError subclass for isinstance checks.
 
     ClientError covers 4xx (including 429 quota); ServerError covers 5xx.
@@ -709,9 +707,7 @@ class _StubClient:
                 raise self._errors.pop(0)
             return SimpleNamespace(text=self._responses.pop(0))
 
-        self.aio = SimpleNamespace(
-            models=SimpleNamespace(generate_content=_generate_content)
-        )
+        self.aio = SimpleNamespace(models=SimpleNamespace(generate_content=_generate_content))
 
 
 def _make_quota_error() -> "Exception":
