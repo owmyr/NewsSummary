@@ -17,8 +17,8 @@
 pip install -e ".[dev]"          # Install package with dev deps
 python -m daily_bot              # Run the pipeline
 python -m daily_bot --retry-failed   # Re-summarize only failed articles from today
-pytest                           # Run all 160 tests
-pytest --cov=daily_bot           # Tests with coverage (currently 79%)
+pytest                           # Run all 236 tests
+pytest --cov=daily_bot           # Tests with coverage
 pytest tests/unit/               # Unit tests only
 pytest tests/integration/        # Integration tests only
 ruff check src/daily_bot/ tests/ # Lint
@@ -35,7 +35,7 @@ src/daily_bot/
 ├── main.py                  # Thin shim re-exporting __main__.main
 ├── config.py                # Pydantic BaseSettings (reads .env automatically)
 ├── models.py                # ScrapedArticle, Summary, Subscriber, EmailSendResult, Category
-├── scraper.py               # Async httpx scraper (BBC-specific helpers)
+├── scraper.py               # Async httpx scraper (BBC-specific helpers, _extract_section)
 ├── summarizer.py            # AsyncGeminiClient (google-genai SDK), language-aware prompts
 ├── emailer.py               # Jinja2 template -> HTML, SMTP batch dispatch
 ├── db.py                    # Firestore lazy-init data layer (get_all_subscribers, etc.)
@@ -80,7 +80,7 @@ functions/                   # Cloud Functions (Node.js)
 2. For each configured source (comma-separated `SOURCES` env var, e.g. `"bbc,g1"`):
    a. `fetch_urls()` -> get article URLs
    b. Dedup against Firestore `dailySummaries/{date}`
-   c. Scrape + summarize concurrently (`asyncio.Semaphore` bounded)
+   c. Scrape + summarize concurrently (`asyncio.Semaphore` bounded). The scraper extracts `article.section` from page metadata (OG/legacy `<meta>` tags, JSON-LD) for sources that expose it (BBC).
    d. Save after each article (partial persistence / resilience)
    e. Circuit breaker short-circuits on repeated failures
 3. Render Jinja2 email template -> save to Firestore `emailTemplates/latest`
@@ -103,6 +103,15 @@ functions/                   # Cloud Functions (Node.js)
 - `summarize_article(client, article_text, title, settings, language="en")` accepts a `language` param.
 - When `language == "pt-BR"`, a Portuguese instruction is prepended to chunk/final/fallback prompts. The category-classification prompt stays English (it validates against `VALID_CATEGORIES`).
 - The orchestrator passes `source.language` automatically — sources don't need to know about the summarizer.
+
+### Category Classification (deterministic, no API call)
+
+- `classify_article(title="", url="", section="")` returns a `VALID_CATEGORIES` value without spending a Gemini call.
+- **Priority order**: URL pattern → source-provided section → title keyword → `"other"`.
+- URL patterns (`_URL_CATEGORY_RULES`) cover BBC section paths (`/news/politics/`, etc.) and G1 section paths (`/politica/`, `/economia/`, `/tecnologia/`, `/educacao/`, `/natureza/`, `/carros/`, `/concursos-e-emprego/`, `/turismo-e-viagem/`, etc.).
+- Section mapping (`_SECTION_CATEGORY_MAP`) normalizes raw BBC section names from `<meta property="article:section">` (e.g. `"World"` → `"world"`, `"UK Politics"` → `"politics"`, `"Technology"` → `"tech"`). Substring matching is checked longest-key-first so compound names resolve correctly.
+- Title keyword fallback (`_TITLE_CATEGORY_RULES`) handles the rare case where neither URL nor section give a hint.
+- BBC article URLs are `https://www.bbc.com/news/articles/<hash>` — they contain no section path, so the URL-pattern check fails and classification falls through to the section parameter (populated by `_extract_section()` during scrape) or title keywords.
 
 ### Subscriber Source Preferences
 
@@ -164,4 +173,5 @@ All settings in `config.py`, loaded from `.env` or env vars. Required: `GOOGLE_A
 - **Language defaults**: `NewsSource.language` defaults to `"en"`. If you forget to override, G1 articles will get English summaries. Always set `language` explicitly for non-English sources.
 - **Subscriber migration**: Existing Firestore subscribers without `sources` field default to `["bbc"]` on read. No manual migration needed.
 - **MIME body in tests**: `SMTP.sendmail()` captures base64-encoded HTML. To assert on rendered content, decode it first using the `_extract_html_body()` helper from `tests/integration/test_subscriber_routing.py`.
-- **Gemini free-tier quota**: The free tier is **5 req/min, 20 req/day**. With `SOURCES=bbc,g1` and `article_limit=4` (default), the pipeline uses **8-16 API calls/day** (1-2 per short article, 2-3 per long article, **0 for category classification**). BBC is processed first and always fits; G1 fits on most days. Two optimizations keep the daily budget in check: (1) **short articles** (≤ 1 chunk) use a single fallback prompt instead of the chunk-merge step, and (2) **category classification is deterministic** (URL pattern + title keyword matching) so no API call is spent on a cosmetic email-card label. If the quota is exhausted mid-run, some articles will have `summary: "Summary generation failed."`. The `AsyncGeminiClient` latches a `quota_exhausted` flag on the first 429 so subsequent calls short-circuit instantly. To recover: wait for the quota to reset, then re-run `python -m daily_bot --retry-failed`. To stay under the per-minute cap, keep `summarize_concurrency=1`.
+- **BBC article URLs**: Real BBC URLs are `https://www.bbc.com/news/articles/<hash>` — they carry no section in the path. The section must come from page metadata (extracted by `_extract_section()` in `scraper.py`). If you add a new BBC-like source whose URLs also lack a section path, populate `ScrapedArticle.section` in the scrape step.
+- **Gemini free-tier quota**: The free tier is **5 req/min, 20 req/day**. With `SOURCES=bbc,g1` and `article_limit=4` (default), the pipeline uses **8-16 API calls/day** (1-2 per short article, 2-3 per long article, **0 for category classification**). BBC is processed first and always fits; G1 fits on most days. Two optimizations keep the daily budget in check: (1) **short articles** (≤ 1 chunk) use a single fallback prompt instead of the chunk-merge step, and (2) **category classification is deterministic** (URL pattern + source-provided section + title keyword matching) so no API call is spent on a cosmetic email-card label. If the quota is exhausted mid-run, some articles will have `summary: "Summary generation failed."`. The `AsyncGeminiClient` latches a `quota_exhausted` flag on the **second consecutive** 429 (first 429 retries once with the API's suggested `retryDelay`, capped at 65s) so subsequent calls short-circuit instantly. To recover: wait for the quota to reset, then re-run `python -m daily_bot --retry-failed`. To stay under the per-minute cap, keep `summarize_concurrency=1`.

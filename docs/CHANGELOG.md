@@ -17,6 +17,8 @@ The pipeline now consistently fits within the free-tier daily quota (20 calls/da
 
 When a 429/RESOURCE_EXHAUSTED error is observed, `AsyncGeminiClient` latches a `quota_exhausted` flag. Every subsequent `generate()` call returns `None` immediately without making a network request. This prevents a daily-quota outage from turning into hours of sleep loops. The flag can be cleared with `reset_quota_exhausted()` once the quota has been refilled. Two new properties: `client.quota_exhausted` (read-only) and `client.reset_quota_exhausted()` (clear the latch).
 
+**Updated behavior (2026-06-17):** The first 429 in a run triggers one retry using the API's suggested `retryDelay`. Only the **second consecutive** 429 latches the flag permanently. This allows a single transient per-minute burst to recover without shutting down the whole pipeline.
+
 ### Fixed — Resilient retry on Gemini 429 quota errors
 
 When the free-tier Gemini quota is exhausted mid-pipeline, some articles end up with `summary: "Summary generation failed."` This release makes the pipeline more resilient and adds a recovery path.
@@ -33,10 +35,61 @@ When the free-tier Gemini quota is exhausted mid-pipeline, some articles end up 
 - **New `_parse_retry_delay_seconds` / `_extract_retry_delay` helpers** in `summarizer.py`, exported and unit-tested.
 - **New `pipeline.FAILED_PLACEHOLDER` constant** = `"Summary generation failed."` so tests and downstream consumers can detect failed summaries reliably.
 
+### Fixed — BBC article classification now works (audit 2026-06-17)
+
+The headline finding of the 2026-06-17 audit: real BBC article URLs follow the format `https://www.bbc.com/news/articles/<hash>` and carry **no section in the path**. The old `classify_article()` only matched URL patterns and title keywords, so almost every BBC article was defaulting to `"other"`. The pipeline still ran, but the email showed "OTHER" for almost every card.
+
+**Resolution:** the scraper now extracts section metadata from the article HTML during the existing scrape (no extra HTTP request), and the classifier uses it as a second source of truth.
+
+- **`src/daily_bot/scraper.py`** — new `_extract_section(soup)` helper tries three metadata sources in order:
+  1. `<meta property="article:section" content="World">` (Open Graph)
+  2. `<meta name="article:section" content="Politics">` (legacy BBC format)
+  3. JSON-LD `articleSection` field (handles list and string forms)
+- **`src/daily_bot/models.py`** — `ScrapedArticle` gains a `section: str = ""` field.
+- **`src/daily_bot/scraper.py`** — `scrape_article_content_async()` calls `_extract_section` and populates `ScrapedArticle.section`.
+- **`src/daily_bot/summarizer.py`** — `classify_article(title, url, section)` and `summarize_article(..., section="")` accept the new parameter. New `_SECTION_CATEGORY_MAP` normalizes raw BBC section names to `VALID_CATEGORIES` values (e.g. `"UK Politics"` → `"politics"`, `"Technology"` → `"tech"`, `"World"` → `"world"`). Substring matching is checked longest-key-first so `"UK Politics"` resolves to `"politics"` before falling through to `"uk"`.
+- **`src/daily_bot/summarizer.py`** — classification priority is now: **URL pattern → source-provided section → title keywords → `"other"`**. URL matching still wins for sources (like G1) where the section is encoded in the URL.
+- **`src/daily_bot/__main__.py`** — orchestrator passes `article.section` through to `summarize_article()` in both the normal and `--retry-failed` paths.
+
+### Fixed — Resilient empty-chunks guard in `summarize_article()`
+
+Defensive guard added in `summarize_article()`. If `chunk_text()` ever returns an empty list (e.g. if `summary_min_words` is set to 0 in the future, or a source returns only whitespace), the function now returns `FAILED_PLACEHOLDER` immediately instead of sending a meaningless empty prompt to Gemini. No Gemini call is made.
+
+### Fixed — Retry mode preserves freshly scraped `image_url`
+
+`_retry_failed_articles()` now uses `article.image_url or f.image_url or ""` instead of `f.image_url`. In retry mode, the article is re-scraped (which may pick up a new hero image from the site) and the fresh value takes priority over the stale Firestore copy. The normal path (line 111) already had this correct — retry mode was the inconsistency.
+
+### Changed — 429 retry budget increased (audit 2026-06-17)
+
+The quota-exhaustion latch now allows **one retry** on the first 429 within a run before latching permanently. The first 429 waits the API's suggested `retryDelay` (capped at 65s) and tries again. A second consecutive 429 latches the flag for the rest of the run. This trades a worst-case ~65s of delay for full recovery on transient per-minute bursts, which are far more common than daily-quota exhaustion.
+
+### Added — G1 section URL rules (audit 2026-06-17)
+
+Five new entries in `_URL_CATEGORY_RULES` cover G1 sections that previously fell through to title keyword matching and defaulted to `"other"`:
+
+| URL pattern | Category | Rationale |
+|---|---|---|
+| `/educacao/` | `other` | No education category |
+| `/natureza/` | `science` | Nature → science |
+| `/carros/` | `other` | No cars category |
+| `/concursos-e-emprego/` | `business` | Jobs → business |
+| `/turismo-e-viagem/` | `other` | No travel category |
+
+### Changed — `actions/checkout@v5` → `@v6` (audit 2026-06-17)
+
+The CI workflow at `.github/workflows/daily-summary.yml` now uses `actions/checkout@v6`. v6 includes SHA-256 support and other security improvements. `actions/setup-python@v6` was already current and is unchanged.
+
 ### Tests
 - 7 new unit tests in `test_summarizer.py` for the retry-delay parser (handles `"13s"`, bare numbers, malformed payloads, etc.).
 - 2 new integration tests in `test_pipeline.py` for the `--retry-failed` path: one verifies a failed article gets re-summarized while a successful one is untouched, the other verifies a no-op when nothing failed.
 - `MockFirestoreClient` and `MockCollection` now support a `pre_existing_articles` parameter to seed the `dailySummaries` collection before a run.
+- **Audit fixes (2026-06-17)** added 38 new tests:
+  - 10 in `test_scraper.py` for `_extract_section()` (OG meta, legacy meta, JSON-LD, missing metadata, etc.)
+  - 17 in `test_summarizer.py` for `classify_article()` with the `section` parameter (priority order, fallback behavior, edge cases)
+  - 5 in `test_summarizer.py` for new G1 URL patterns (`/educacao/`, `/natureza/`, `/carros/`, `/concursos-e-emprego/`, `/turismo-e-viagem/`)
+  - 5 in `test_summarizer.py` for real BBC URL format (`https://www.bbc.com/news/articles/<hash>`) classification with various section values
+  - 1 in `test_summarizer.py` for the empty-chunks guard
+  - Test count: 160 → 236.
 
 ### Changed — Canonical public site is now `thedailybot.web.app`
 
@@ -241,6 +294,7 @@ The headline feature of this release is the addition of **G1 (g1.globo.com)** as
 - **New subscribers** through the updated `public/index.html` will have their checkbox selections saved.
 - **First G1 run**: the Firestore `subscribers` docs that pre-date this change will all be treated as BBC-only until they re-subscribe (or you backfill the `sources` field manually).
 - **CI secrets** unchanged — no new secrets required for G1.
+- **BBC article classification fix:** No operator action required. The next pipeline run will start extracting section metadata from BBC article pages automatically. Existing articles in Firestore (`dailySummaries/{date}`) that were saved with `category: "other"` will need to be re-summarized via `python -m daily_bot --retry-failed` to pick up the corrected categories. (Note: `--retry-failed` only re-processes articles whose `summary` matches the failure placeholder, not articles that succeeded with a wrong category. To reclassify existing successful articles, delete their entries from `dailySummaries/{date}` and re-run the pipeline.)
 
 ---
 
