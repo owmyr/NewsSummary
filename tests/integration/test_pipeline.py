@@ -420,3 +420,61 @@ async def test_retry_failed_only_with_no_failures_is_a_noop(
         for doc in daily_summaries_coll.docs.values():
             assert doc._data == doc._data  # untouched
     assert fake_gemini.calls == []
+
+
+async def test_section_metadata_drives_bbc_classification(
+    test_settings: Settings,
+    bbc_homepage_html: str,
+):
+    """BBC article pages embed <meta property="article:section">. The
+    orchestrator must extract it and pass it to the classifier so a
+    real-format URL like /news/articles/<hash> still gets a useful
+    category (instead of falling through to "other").
+    """
+    test_settings.scrape_concurrency = 2
+    test_settings.summarize_concurrency = 1
+    test_settings.email_batch_size = 10
+    test_settings.email_batch_delay_seconds = 0
+
+    # Article HTML with a section meta tag. Note the URL doesn't include
+    # any section path -- this is the real BBC URL format.
+    article_html = """<!DOCTYPE html>
+<html>
+<head>
+  <meta property="og:image" content="https://ichef.bbci.co.uk/news/1024/hero.jpg">
+  <meta property="article:section" content="World">
+</head>
+<body>
+  <main>
+    <h1>Test Article Title</h1>
+    <div data-component="text-block">
+      <p>First paragraph of the article body.</p>
+    </div>
+  </main>
+</body>
+</html>"""
+
+    _patch_http(article_html, bbc_homepage_html)
+
+    # 4 articles, each is short (1 chunk) so 1 fallback call per article.
+    fake_gemini = FakeGeminiClient(
+        responses=[f"Summary of article {i}." for i in range(4)]
+    )
+
+    firestore = MockFirestoreClient(subscribers=[])
+
+    with patch("daily_bot.db.get_db", return_value=firestore):
+        with patch("daily_bot.__main__.AsyncGeminiClient", return_value=fake_gemini):
+            await pipeline.run_async(test_settings)
+
+    # All 4 articles should be classified as "world" (from the section meta).
+    daily_summaries_coll = firestore._collections.get("dailySummaries")
+    assert daily_summaries_coll is not None
+    last_set_doc = list(daily_summaries_coll.docs.values())[-1]
+    saved = last_set_doc._data.get("articles", [])
+    assert len(saved) == 4
+    for article in saved:
+        assert article["category"] == "world", (
+            f"Expected 'world' from section meta, got {article['category']!r} "
+            f"for {article['url']}"
+        )

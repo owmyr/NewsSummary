@@ -261,12 +261,14 @@ async def scrape_article_content_async(
 
     content = _extract_article_text(soup)
     image_url = _extract_article_image(soup)
+    section = _extract_section(soup)
 
     return ScrapedArticle(
         url=url,
         title=title,
         content=content,
         image_url=image_url,
+        section=section,
     )
 
 

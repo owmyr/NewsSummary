@@ -101,6 +101,7 @@ async def _process_one(
             settings,
             language=source.language,
             url=url,
+            section=article.section,
         )
     except Exception:
         logger.exception("Summarization crashed for %s", url)
