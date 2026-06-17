@@ -40,6 +40,14 @@ class ScrapedArticle(BaseModel):
     title: str
     content: str
     image_url: str | None = None
+    section: str = Field(
+        default="",
+        description=(
+            "Source-specific section hint extracted from article metadata "
+            "(e.g. BBC <meta property='article:section'>). Used by the "
+            "classifier to map to a VALID_CATEGORIES value."
+        ),
+    )
 
 
 class Summary(BaseModel):

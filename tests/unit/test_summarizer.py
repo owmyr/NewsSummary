@@ -599,6 +599,107 @@ def test_classify_article_case_insensitive():
     )
 
 
+# ---------------- section-based classification ----------------
+
+
+@pytest.mark.parametrize(
+    "section,expected",
+    [
+        ("World", "world"),
+        ("UK", "uk"),
+        ("UK Politics", "politics"),
+        ("Politics", "politics"),
+        ("Business", "business"),
+        ("Technology", "tech"),
+        ("Science", "science"),
+        ("Health", "health"),
+        ("Europe", "europe"),
+        ("International", "world"),
+        # Case-insensitive
+        ("WORLD", "world"),
+        ("tech", "tech"),
+    ],
+)
+def test_classify_article_section_exact_match(section: str, expected: str):
+    """BBC <meta article:section> maps directly to a VALID_CATEGORIES value."""
+    assert (
+        classify_article(
+            title="Any title",
+            url="https://www.bbc.com/news/articles/abc123",  # real-format URL
+            section=section,
+        )
+        == expected
+    )
+
+
+def test_classify_article_section_substring_match():
+    """Compound section names that contain a known key match via substring."""
+    # "US & Canada" doesn't have an exact key but contains "canada" -> not a key.
+    # The substring fallback only matches keys defined in the map, not arbitrary
+    # substrings. Verify a section that DOES contain a known key as substring.
+    # "UK Politics" exact-matches "uk politics". But "UK Politics Live" is
+    # a real BBC section that should still resolve.
+    assert (
+        classify_article(
+            url="https://www.bbc.com/news/articles/abc",
+            section="UK Politics Live",
+        )
+        == "politics"
+    )
+
+
+def test_classify_article_section_takes_priority_over_title():
+    """When both section and title match, section wins (more specific)."""
+    # Title suggests "politics" via "government", but section says "World"
+    assert (
+        classify_article(
+            title="Government announces new world order",
+            url="https://www.bbc.com/news/articles/abc",
+            section="World",
+        )
+        == "world"
+    )
+
+
+def test_classify_article_url_takes_priority_over_section():
+    """URL patterns are still checked before section (covers G1 best)."""
+    # G1 URL pattern /politica/ wins over a section hint
+    assert (
+        classify_article(
+            title="Any title",
+            url="https://g1.globo.com/politica/noticia/2026/06/16/x.ghtml",
+            section="World",  # would otherwise map to "world"
+        )
+        == "politics"
+    )
+
+
+def test_classify_article_unknown_section_falls_to_title():
+    """Sections not in the map fall through to title keyword matching."""
+    # "Local" is not in the map; title keyword "council" should match politics
+    # (or "other" if no keyword matches). The key behavior: no crash, no
+    # misclassification to a default; falls through to the next tier.
+    result = classify_article(
+        title="Local council votes on housing plan",
+        url="https://www.bbc.com/news/articles/abc",
+        section="Local",
+    )
+    # "council" not in the keywords list; should fall to "other"
+    assert result == "other"
+
+
+def test_classify_article_empty_section_falls_through():
+    """Empty section string is the same as no section at all."""
+    assert (
+        classify_article(
+            title="Government policy update",
+            url="https://www.bbc.com/news/articles/abc",
+            section="",
+        )
+        == "politics"  # from title keyword
+    )
+
+
 # ---------------- single-pass optimization ----------------
 
 

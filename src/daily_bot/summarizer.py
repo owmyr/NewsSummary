@@ -336,6 +336,29 @@ _URL_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
     ("/esporte/", "other"),  # no sport category; fall through to "other"
 )
 
+# Section name → category. Used when a source provides the section via
+# page metadata (e.g. BBC <meta property="article:section">). Maps the
+# raw section name (lowercased) to a VALID_CATEGORIES value.
+#
+# Compound names like "UK Politics" or "US & Canada" are matched by
+# substring check in classify_article() after the exact-match lookup
+# fails. Order in this dict is preserved as the iteration order for the
+# substring fallback.
+_SECTION_CATEGORY_MAP: dict[str, str] = {
+    "uk": "uk",
+    "uk politics": "politics",
+    "politics": "politics",
+    "world": "world",
+    "international": "world",
+    "us & canada": "world",
+    "business": "business",
+    "technology": "tech",
+    "tech": "tech",
+    "science": "science",
+    "health": "health",
+    "europe": "europe",
+}
+
 # Title keywords → category. Used as a fallback when the URL doesn't match.
 # Order matters: more specific phrases AND country/region terms come first
 # so e.g. "UK government" → "uk" beats "government" → "politics".
@@ -389,16 +412,21 @@ _TITLE_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
 )
 
 
-def classify_article(title: str = "", url: str = "") -> str:
+def classify_article(title: str = "", url: str = "", section: str = "") -> str:
     """Classify an article into one of VALID_CATEGORIES without an API call.
 
-    URL pattern matching is tried first (most reliable: BBC and G1 both
-    embed the section in the URL). Title keyword matching is a fallback.
-    Returns ``"other"`` if nothing matches.
+    Three tiers of evidence, tried in order:
 
-    The result is suitable for the cosmetic ``category`` field shown on
-    email article cards. It is not a substitute for full content-based
-    classification, but it never costs an API call.
+    1. **URL patterns** — G1 URLs embed the section path
+       (``/politica/``, ``/economia/``). Most reliable for G1.
+    2. **Source-provided section** — BBC article HTML embeds the section
+       in ``<meta property="article:section">`` (e.g. ``"World"``,
+       ``"UK Politics"``). The ``section`` argument is the raw value
+       extracted during scraping. Reliable for BBC, no-op for G1.
+    3. **Title keywords** — fallback when the above don't match.
+       Handles ambiguous cases and unusual URLs.
+
+    Returns ``"other"`` if nothing matches. Never costs an API call.
     """
     url_lower = (url or "").lower()
     title_lower = (title or "").lower()
@@ -406,10 +434,25 @@ def classify_article(title: str = "", url: str = "") -> str:
     # (e.g. "uk " so it doesn't match "Ukraine").
     title_padded = f" {title_lower} "
 
+    # 1. URL pattern
     for pattern, category in _URL_CATEGORY_RULES:
         if pattern in url_lower:
             return category
 
+    # 2. Source-provided section
+    if section:
+        normalized = section.strip().lower()
+        if normalized in _SECTION_CATEGORY_MAP:
+            return _SECTION_CATEGORY_MAP[normalized]
+        # Partial match for compound section names like "UK Politics Live".
+        # Iterate the longest keys first so "uk politics" wins over "uk".
+        for section_name, category in sorted(
+            _SECTION_CATEGORY_MAP.items(), key=lambda kv: len(kv[0]), reverse=True
+        ):
+            if section_name and section_name in normalized:
+                return category
+
+    # 3. Title keywords
     for keyword, category in _TITLE_CATEGORY_RULES:
         if keyword in title_padded:
             return category
@@ -424,6 +467,7 @@ async def summarize_article(
     settings: Settings,
     language: str = "en",
     url: str = "",
+    section: str = "",
 ) -> Summary:
     """Summarize an article using chunk-merge strategy with a fallback path.
 
@@ -431,8 +475,9 @@ async def summarize_article(
     entirely and use the fallback prompt in a single API call. For longer
     articles we chunk, summarize each chunk concurrently, then merge.
 
-    Category classification is deterministic (URL + title keyword matching)
-    so the pipeline does not spend an API call on a cosmetic label.
+    Category classification is deterministic (URL patterns + source
+    section + title keyword matching) so the pipeline does not spend an
+    API call on a cosmetic label.
     """
     cleaned = clean_article_text(article_text or "")
     if len(cleaned.split()) < settings.summary_min_words:
@@ -448,7 +493,7 @@ async def summarize_article(
         return Summary(
             title=title,
             summary="Summary generation failed.",
-            category=classify_article(title=title, url=url),
+            category=classify_article(title=title, url=url, section=section),
         )
 
     if len(chunks) <= 1:
@@ -471,6 +516,6 @@ async def summarize_article(
             final = await client.generate(_build_final_prompt(title, combined, language))
             summary_text = final or "Summary generation failed."
 
-    category = classify_article(title=title, url=url)
+    category = classify_article(title=title, url=url, section=section)
 
     return Summary(title=title, summary=summary_text, category=category)
