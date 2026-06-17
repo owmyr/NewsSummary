@@ -11,6 +11,7 @@ Refactored from the original MyNews.py with:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from urllib.parse import urljoin
 
@@ -117,6 +118,74 @@ def _extract_article_text(soup: BeautifulSoup) -> str:
     if paragraphs:
         return "\n".join(paragraphs)
     return "Could not find article content."
+
+
+# Metadata sources for the article section, in priority order. The first
+# non-empty match wins. BBC uses <meta property="article:section"> on most
+# pages; some pages use the older <meta name="article:section"> form.
+_SECTION_META_SELECTORS: tuple[tuple[str, str], ...] = (
+    ('meta[property="article:section"]', "content"),
+    ('meta[name="article:section"]', "content"),
+)
+
+
+def _extract_section(soup: BeautifulSoup) -> str:
+    """Extract the article section from page metadata.
+
+    Tries Open Graph ``article:section`` meta tags first, then JSON-LD
+    ``articleSection`` blocks. Returns an empty string if no section
+    metadata is found.
+
+    The result is the raw section name as it appears in the page (e.g.
+    ``"World"``, ``"UK Politics"``). The summarizer normalizes it to a
+    ``VALID_CATEGORIES`` value via :func:`_normalize_section`.
+    """
+    for selector, attr in _SECTION_META_SELECTORS:
+        tag = soup.select_one(selector)
+        if not tag:
+            continue
+        value = (tag.get(attr) or "").strip()
+        if value:
+            return value
+
+    for script in soup.find_all("script", attrs={"type": "application/ld+json"}):
+        try:
+            data = json.loads(script.string or "")
+        except (ValueError, TypeError):
+            continue
+        section = _section_from_jsonld(data)
+        if section:
+            return section
+
+    return ""
+
+
+def _section_from_jsonld(data: object) -> str:
+    """Pull an ``articleSection`` value out of a JSON-LD payload.
+
+    Handles the common shapes: a top-level dict with ``articleSection``
+    (string or list), a @graph wrapper, or a list of nodes. Returns an
+    empty string if no section is present.
+    """
+    candidates: list[object] = []
+    if isinstance(data, dict):
+        if "@graph" in data and isinstance(data["@graph"], list):
+            candidates.extend(data["@graph"])
+        candidates.append(data)
+    elif isinstance(data, list):
+        candidates.extend(data)
+
+    for node in candidates:
+        if not isinstance(node, dict):
+            continue
+        section = node.get("articleSection")
+        if isinstance(section, str) and section.strip():
+            return section.strip()
+        if isinstance(section, list) and section:
+            first = section[0]
+            if isinstance(first, str) and first.strip():
+                return first.strip()
+    return ""
 
 
 def _build_client(settings: Settings) -> httpx.AsyncClient:

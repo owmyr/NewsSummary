@@ -11,6 +11,7 @@ from daily_bot.scraper import (
     _build_client,
     _extract_article_image,
     _extract_article_text,
+    _extract_section,
     _normalize_url,
     get_top_story_urls_async,
     scrape_article_content_async,
@@ -203,3 +204,120 @@ async def test_build_client_has_timeout(test_settings):
             client.timeout.write,
             client.timeout.pool,
         )
+
+
+# ---------------- section extraction ----------------
+
+
+def _make_soup(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html, "html.parser")
+
+
+def test_extract_section_from_og_meta():
+    """Open Graph article:section meta tag is the primary source."""
+    html = """
+    <html><head>
+      <meta property="article:section" content="World">
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "World"
+
+
+def test_extract_section_from_legacy_name_meta():
+    """Older BBC pages may use the name= form instead of property=."""
+    html = """
+    <html><head>
+      <meta name="article:section" content="Politics">
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "Politics"
+
+
+def test_extract_section_prefers_og_over_legacy():
+    """If both forms are present, OG (the first selector) wins."""
+    html = """
+    <html><head>
+      <meta property="article:section" content="World">
+      <meta name="article:section" content="Politics">
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "World"
+
+
+def test_extract_section_from_jsonld_string():
+    """JSON-LD with articleSection as a string is parsed."""
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "NewsArticle", "articleSection": "Technology"}
+      </script>
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "Technology"
+
+
+def test_extract_section_from_jsonld_list():
+    """JSON-LD with articleSection as a list uses the first element."""
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+        {"articleSection": ["Health", "NHS", "Politics"]}
+      </script>
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "Health"
+
+
+def test_extract_section_from_jsonld_graph():
+    """JSON-LD wrapped in @graph is unwrapped before lookup."""
+    html = """
+    <html><head>
+      <script type="application/ld+json">
+        {"@graph": [{"@type": "WebPage"}, {"@type": "NewsArticle", "articleSection": "Business"}]}
+      </script>
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "Business"
+
+
+def test_extract_section_meta_takes_priority_over_jsonld():
+    """If both meta and JSON-LD are present, meta wins."""
+    html = """
+    <html><head>
+      <meta property="article:section" content="World">
+      <script type="application/ld+json">
+        {"articleSection": "Politics"}
+      </script>
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "World"
+
+
+def test_extract_section_returns_empty_when_no_metadata():
+    """No meta and no JSON-LD -> empty string (caller falls through)."""
+    html = "<html><head></head><body><p>Just an article</p></body></html>"
+    assert _extract_section(_make_soup(html)) == ""
+
+
+def test_extract_section_handles_malformed_jsonld():
+    """A malformed JSON-LD block should not raise; falls through to empty."""
+    html = """
+    <html><head>
+      <meta property="article:section" content="World">
+      <script type="application/ld+json">{not valid json</script>
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "World"
+
+
+def test_extract_section_handles_empty_meta_content():
+    """An empty content attribute is treated as missing."""
+    html = """
+    <html><head>
+      <meta property="article:section" content="">
+      <script type="application/ld+json">
+        {"articleSection": "Science"}
+      </script>
+    </head><body></body></html>
+    """
+    assert _extract_section(_make_soup(html)) == "Science"
