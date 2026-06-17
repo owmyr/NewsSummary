@@ -589,13 +589,9 @@ def test_classify_article_url_patterns(url: str, expected: str):
         ),
     ],
 )
-def test_classify_article_real_bbc_url_format(
-    url: str, title: str, section: str, expected: str
-):
+def test_classify_article_real_bbc_url_format(url: str, title: str, section: str, expected: str):
     """Real BBC URLs (no section in path) rely on the section parameter."""
-    assert (
-        classify_article(title=title, url=url, section=section) == expected
-    )
+    assert classify_article(title=title, url=url, section=section) == expected
 
 
 def test_classify_article_url_takes_priority_over_title():

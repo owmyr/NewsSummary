@@ -457,9 +457,7 @@ async def test_section_metadata_drives_bbc_classification(
     _patch_http(article_html, bbc_homepage_html)
 
     # 4 articles, each is short (1 chunk) so 1 fallback call per article.
-    fake_gemini = FakeGeminiClient(
-        responses=[f"Summary of article {i}." for i in range(4)]
-    )
+    fake_gemini = FakeGeminiClient(responses=[f"Summary of article {i}." for i in range(4)])
 
     firestore = MockFirestoreClient(subscribers=[])
 
@@ -475,6 +473,5 @@ async def test_section_metadata_drives_bbc_classification(
     assert len(saved) == 4
     for article in saved:
         assert article["category"] == "world", (
-            f"Expected 'world' from section meta, got {article['category']!r} "
-            f"for {article['url']}"
+            f"Expected 'world' from section meta, got {article['category']!r} for {article['url']}"
         )
