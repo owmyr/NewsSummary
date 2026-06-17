@@ -537,11 +537,65 @@ def test_retry_delay_cap_is_at_most_65_seconds():
         ("https://g1.globo.com/saude/noticia/2026/06/16/x.ghtml", "health"),
         ("https://g1.globo.com/mundo/noticia/2026/06/16/x.ghtml", "world"),
         ("https://g1.globo.com/internacional/noticia/2026/06/16/x.ghtml", "world"),
+        # G1 sections added in Phase 3
+        ("https://g1.globo.com/educacao/noticia/2026/06/16/x.ghtml", "other"),
+        ("https://g1.globo.com/natureza/noticia/2026/06/16/x.ghtml", "science"),
+        ("https://g1.globo.com/carros/noticia/2026/06/16/x.ghtml", "other"),
+        ("https://g1.globo.com/concursos-e-emprego/noticia/2026/06/16/x.ghtml", "business"),
+        ("https://g1.globo.com/turismo-e-viagem/noticia/2026/06/16/x.ghtml", "other"),
     ],
 )
 def test_classify_article_url_patterns(url: str, expected: str):
     """URL pattern matching covers the major BBC and G1 sections."""
     assert classify_article(title="Some article", url=url) == expected
+
+
+@pytest.mark.parametrize(
+    "url,title,section,expected",
+    [
+        # Real BBC URL format (/news/articles/<hash>) -- no section path.
+        # The section meta tag is what tells us the category.
+        (
+            "https://www.bbc.com/news/articles/c0wd9x1k20xo",
+            "Some article",
+            "World",
+            "world",
+        ),
+        (
+            "https://www.bbc.com/news/articles/abc123",
+            "Some article",
+            "UK Politics",
+            "politics",
+        ),
+        (
+            "https://www.bbc.com/news/articles/def456",
+            "Some article",
+            "Business",
+            "business",
+        ),
+        # Real BBC URL, no section -- title keyword fallback
+        (
+            "https://www.bbc.com/news/articles/abc",
+            "Government announces policy",
+            "",
+            "politics",
+        ),
+        # Real BBC URL, no section, no useful title -- falls to "other"
+        (
+            "https://www.bbc.com/news/articles/abc",
+            "Lorem ipsum dolor sit amet",
+            "",
+            "other",
+        ),
+    ],
+)
+def test_classify_article_real_bbc_url_format(
+    url: str, title: str, section: str, expected: str
+):
+    """Real BBC URLs (no section in path) rely on the section parameter."""
+    assert (
+        classify_article(title=title, url=url, section=section) == expected
+    )
 
 
 def test_classify_article_url_takes_priority_over_title():

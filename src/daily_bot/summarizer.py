@@ -333,6 +333,11 @@ _URL_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
     ("/saude/", "health"),
     ("/mundo/", "world"),
     ("/internacional/", "world"),
+    ("/educacao/", "other"),  # no education category
+    ("/natureza/", "science"),  # nature → science
+    ("/carros/", "other"),  # no cars category
+    ("/concursos-e-emprego/", "business"),  # jobs → business
+    ("/turismo-e-viagem/", "other"),
     ("/esporte/", "other"),  # no sport category; fall through to "other"
 )
 
