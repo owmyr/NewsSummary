@@ -76,6 +76,33 @@ class Subscriber(BaseModel):
     email: str
     sources: list[str] = Field(default_factory=lambda: ["bbc"])
     subscribed_at: datetime | None = None
+    country: str | None = Field(
+        default=None,
+        description="ISO country name from IP geolocation (e.g. 'Brazil'). None for legacy subscribers.",
+    )
+    city: str | None = Field(
+        default=None,
+        description="City name from IP geolocation. Approximate.",
+    )
+    timezone: str | None = Field(
+        default=None,
+        description="IANA timezone inferred from IP geolocation (e.g. 'America/Sao_Paulo').",
+    )
+    browser_timezone: str | None = Field(
+        default=None,
+        description=(
+            "IANA timezone detected client-side via Intl.DateTimeFormat. "
+            "More reliable than the IP-based timezone for the user's actual locale."
+        ),
+    )
+    lat: float | None = Field(
+        default=None,
+        description="Approximate latitude from IP geolocation.",
+    )
+    lon: float | None = Field(
+        default=None,
+        description="Approximate longitude from IP geolocation.",
+    )
 
 
 class EmailSendResult(BaseModel):

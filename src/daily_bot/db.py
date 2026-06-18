@@ -119,7 +119,13 @@ def get_all_subscriber_emails() -> list[str]:
 
 
 def get_all_subscribers() -> list[Subscriber]:
-    """Return all subscribers from Firestore with their source preferences."""
+    """Return all subscribers from Firestore with their source preferences.
+
+    Optional geolocation fields (``country``, ``city``, ``timezone``,
+    ``browser_timezone``, ``lat``, ``lon``) are read if present. Legacy
+    subscribers that signed up before geolocation was added will simply
+    have these fields set to ``None`` and are loaded successfully.
+    """
     db = get_db()
     docs = db.collection("subscribers").stream()
     subscribers: list[Subscriber] = []
@@ -136,6 +142,12 @@ def get_all_subscribers() -> list[Subscriber]:
                 email=str(email),
                 sources=[str(s) for s in sources],
                 subscribed_at=data.get("subscribed_at"),
+                country=data.get("country"),
+                city=data.get("city"),
+                timezone=data.get("timezone"),
+                browser_timezone=data.get("browser_timezone"),
+                lat=data.get("lat"),
+                lon=data.get("lon"),
             )
         )
     logger.info("Loaded %d subscribers from Firestore", len(subscribers))

@@ -186,3 +186,33 @@ def test_subscriber_default_factory_is_independent():
     b = Subscriber(email="b@x.com")
     a.sources.append("g1")
     assert b.sources == ["bbc"]
+
+
+def test_subscriber_geo_fields_default_to_none():
+    """Legacy subscribers have no geo data; all geo fields should be None by default."""
+    sub = Subscriber(email="user@example.com")
+    assert sub.country is None
+    assert sub.city is None
+    assert sub.timezone is None
+    assert sub.browser_timezone is None
+    assert sub.lat is None
+    assert sub.lon is None
+
+
+def test_subscriber_accepts_geo_fields():
+    """A subscriber record can carry IP and browser geolocation data."""
+    sub = Subscriber(
+        email="user@example.com",
+        country="Brazil",
+        city="Sao Paulo",
+        timezone="America/Sao_Paulo",
+        browser_timezone="America/Sao_Paulo",
+        lat=-23.55,
+        lon=-46.63,
+    )
+    assert sub.country == "Brazil"
+    assert sub.city == "Sao Paulo"
+    assert sub.timezone == "America/Sao_Paulo"
+    assert sub.browser_timezone == "America/Sao_Paulo"
+    assert sub.lat == -23.55
+    assert sub.lon == -46.63

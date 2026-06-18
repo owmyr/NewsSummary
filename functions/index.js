@@ -10,6 +10,10 @@ const admin = require("firebase-admin");
 const cors = require("cors")({origin: true});
 const nodemailer = require("nodemailer");
 
+// Use Node's built-in http client for the ip-api.com lookup so we
+// avoid pulling in a heavy HTTP library for a single best-effort call.
+const http = require("http");
+
 admin.initializeApp();
 const db = admin.firestore();
 
@@ -31,6 +35,66 @@ const escapeHtml = (str) => {
 // ==========================================================
 const isInvalidEmail = (email) => {
   return !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+};
+
+// ==========================================================
+//  IP GEOLOCATION (ip-api.com, free tier, no API key)
+// ==========================================================
+//
+// ip-api.com is used at subscribe time to record an approximate
+// location for each new subscriber. Returns country/city/timezone/lat/lon
+// from the request IP. We treat this as best-effort telemetry: if the
+// lookup fails or times out, we still complete the subscription.
+
+const extractClientIp = (req) => {
+  // Firebase Functions runs behind a load balancer that forwards the
+  // original client IP in x-forwarded-for as a comma-separated list.
+  const xff = req.headers["x-forwarded-for"];
+  if (typeof xff === "string" && xff.length > 0) {
+    return xff.split(",")[0].trim();
+  }
+  return req.ip || "";
+};
+
+const geolocateIp = (ip) => {
+  return new Promise((resolve) => {
+    if (!ip || ip === "::1" || ip === "127.0.0.1") {
+      // Skip local / loopback addresses; they yield no useful geo data.
+      return resolve(null);
+    }
+    const url = `http://ip-api.com/json/${encodeURIComponent(ip)}?fields=status,country,city,timezone,lat,lon`;
+    const request = http.get(url, {timeout: 3000}, (response) => {
+      let data = "";
+      response.on("data", (chunk) => (data += chunk));
+      response.on("end", () => {
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed && parsed.status === "success") {
+            resolve({
+              country: parsed.country || null,
+              city: parsed.city || null,
+              timezone: parsed.timezone || null,
+              lat: typeof parsed.lat === "number" ? parsed.lat : null,
+              lon: typeof parsed.lon === "number" ? parsed.lon : null,
+            });
+          } else {
+            resolve(null);
+          }
+        } catch (err) {
+          console.warn("Failed to parse ip-api response:", err);
+          resolve(null);
+        }
+      });
+    });
+    request.on("error", (err) => {
+      console.warn("ip-api lookup failed:", err.message);
+      resolve(null);
+    });
+    request.on("timeout", () => {
+      request.destroy();
+      resolve(null);
+    });
+  });
 };
 
 // ==========================================================
@@ -80,7 +144,7 @@ exports.addSubscriber = functions.https.onRequest((req, res) => {
       return res.status(405).json({message: "Method Not Allowed"});
     }
 
-    const {email, sources} = req.body;
+    const {email, sources, timezone} = req.body;
     if (!email || isInvalidEmail(email)) {
       return res.status(400).json({message: "Please provide a valid email."});
     }
@@ -92,6 +156,13 @@ exports.addSubscriber = functions.https.onRequest((req, res) => {
       if (subscriberSources.length === 0) subscriberSources = ["bbc"];
     }
 
+    // browser_timezone is the IANA zone reported by the client JS
+    // (e.g. "America/Sao_Paulo"). It's separate from the IP-based
+    // timezone stored below so we can compare the two and prefer the
+    // browser value when reasoning about the user's actual locale.
+    const browserTimezone =
+      typeof timezone === "string" && timezone.length > 0 ? timezone : null;
+
     try {
       const subscribersRef = db.collection("subscribers");
 
@@ -100,11 +171,22 @@ exports.addSubscriber = functions.https.onRequest((req, res) => {
         return res.status(409).json({message: "This email is already subscribed."});
       }
 
-      await subscribersRef.add({
+      // Best-effort IP geolocation; never block the signup on it.
+      const clientIp = extractClientIp(req);
+      const geo = await geolocateIp(clientIp);
+
+      const doc = {
         email: email,
         sources: subscriberSources,
         subscribedAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
+        country: geo ? geo.country : null,
+        city: geo ? geo.city : null,
+        timezone: geo ? geo.timezone : null,
+        browser_timezone: browserTimezone,
+        lat: geo ? geo.lat : null,
+        lon: geo ? geo.lon : null,
+      };
+      await subscribersRef.add(doc);
 
       try {
         await sendWelcomeEmail(email);

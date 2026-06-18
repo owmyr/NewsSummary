@@ -278,12 +278,14 @@
         const sources = checkedSources.length > 0 ? checkedSources : ['bbc'];
 
         try {
+            const browserTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
             const res = await fetch(ADD_SUBSCRIBER_URL, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     email: emailInput.value.trim(),
                     sources: sources,
+                    timezone: browserTimezone,
                 })
             });
             const data = await res.json();
