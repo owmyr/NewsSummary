@@ -13,6 +13,7 @@ def test_settings() -> Settings:
     """A Settings instance with dummy values, suitable for tests."""
     return Settings(
         google_api_key="test-key",
+        groq_api_key="",
         firebase_credentials='{"type":"service_account"}',
         sender_email="bot@example.com",
         sender_password="password1234",

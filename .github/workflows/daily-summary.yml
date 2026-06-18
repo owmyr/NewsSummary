@@ -2,8 +2,21 @@ name: Daily News Summary
 
 on:
   schedule:
-    # Runs at 09:00 UTC every day (6 AM in São Paulo)
-    - cron: '0 9 * * *'
+    # Runs at 13:00 UTC every day. Prioritizes US subscribers
+    # (the digest content is in English, BBC is a US-relevant source),
+    # while still landing in Brazilian inboxes during the late morning:
+    #
+    #   - 08:00 US East (EDT, UTC-4): perfect morning routine time
+    #   - 05:00 US West (PDT, UTC-7): early but visible on wake
+    #   - 10:00 São Paulo (BRT, UTC-3): late morning, just past start of day
+    #   - 14:00 UK (BST, UTC+1): afternoon, BBC morning wave (06:00-08:00
+    #     UK) is fully published and the top stories are still stable
+    #
+    # Running at 13:00 UTC (vs 09:00 or 11:00) actually captures MORE
+    # content: the full BBC morning news wave + 4-5 hours of additional
+    # late-morning coverage, since BBC top stories are stable for hours
+    # once they hit the homepage.
+    - cron: '0 13 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -72,6 +85,7 @@ jobs:
       - name: Run the news summarizer
         env:
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           FIREBASE_CREDENTIALS: ${{ secrets.FIREBASE_CREDENTIALS }}
           SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
           SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}

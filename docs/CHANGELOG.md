@@ -4,11 +4,37 @@ All notable changes to **Daily Bot** are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added — `--dry-run` flag for local end-to-end testing
+
+The pipeline now supports a `--dry-run` flag that runs the full flow (scrape, summarize, render email, save template to Firestore) but skips the SMTP dispatch. The would-be dispatch is logged instead. Useful for previewing what tomorrow's digest will look like without spamming subscribers.
+
+```bash
+python -m daily_bot --dry-run
+```
+
+- **`src/daily_bot/__main__.py`** — added `dry_run` parameter to `run_async` and `run`, parsed from `--dry-run` in `_parse_args`. When True, the dispatch loop logs the would-be recipient list and skips `send_daily_digest_async`. The email template is still saved to `emailTemplates/latest` so the public preview site reflects the rendered content.
+- **`tests/integration/test_pipeline.py`** — new `test_dry_run_skips_smtp_but_saves_template` verifies the flag persists summaries and the template but makes zero SMTP calls and writes no `email_log` entries.
+
+### Added — Groq integration for English source summarization
+
+The pipeline now supports **Groq** (Llama 3.1 70B) as an alternative LLM provider for English-language sources. When `GROQ_API_KEY` is set, English sources route to Groq for faster inference with much higher free-tier limits (30 req/min, ~1440 req/day vs Gemini's 5 req/min, 20 req/day). Portuguese sources always use Gemini for best PT-BR quality.
+
+- **`src/daily_bot/groq_client.py`** — new `AsyncGroqClient` with retry + exponential backoff. Satisfies the `LLMClient` protocol (same `generate` / `generate_many` interface as `AsyncGeminiClient`). No quota-exhaustion latch needed — the Groq free tier is generous enough for simple retries.
+- **`src/daily_bot/llm_client.py`** — new `LLMClient` `Protocol` defining the `generate(prompt) -> str | None` and `generate_many(prompts, concurrency) -> list[str | None]` interface. Both `AsyncGeminiClient` and `AsyncGroqClient` satisfy this protocol.
+- **`src/daily_bot/config.py`** — three new settings: `groq_api_key` (default `""`), `groq_model` (default `"llama-3.3-70b-versatile"`), `groq_retries` (default `3`).
+- **`src/daily_bot/__main__.py`** — new `_select_client(language, groq_client, gemini)` function routes English sources to Groq when configured, all other languages to Gemini. Falls back to Gemini when `GROQ_API_KEY` is unset.
+- **`tests/unit/test_groq_client.py`** — 12 tests: construction, `generate`, retry on rate limit/API error, `generate_many`, model selection, protocol satisfaction.
+
+**Operator action required**: To enable Groq in production, add `GROQ_API_KEY` to your GitHub Actions secrets (or `.env`). No other changes needed. If unset, the pipeline behaves identically to before — all sources use Gemini.
+
 ### Changed — Stay within the Gemini free tier
 
 The pipeline now consistently fits within the free-tier daily quota (20 calls/day) for both BBC and G1 combined.
 
 - **`article_limit` default lowered from 5 to 4.** With 4 articles per source, the pipeline uses 8-16 calls/day, leaving 4-12 calls of margin.
+- **`article_limit` default lowered from 4 to 3.** With 3 articles per source, the daily Gemini budget is 6-9 calls (with 11-14 calls of margin to the 20/day cap). Combined with the time-based latch (see below), this keeps the daily run well within the free tier.
+- **Time-based `quota_exhausted` latch.** The previous latch was permanent for the run: a single per-minute burst killed the rest of the digest. The latch is now timestamped and auto-clears after 65s, so a transient per-minute spike doesn't poison the entire run.
+- **Inter-call throttling for Gemini.** New `gemini_min_call_interval_seconds` setting (default 13s) ensures consecutive Gemini calls are spaced out, even when the previous call returned faster than the per-minute window allows. Combined with `summarize_concurrency=1`, this keeps the pipeline comfortably under the 5 req/min limit without burning retries on 429s.
 - **Single-pass summarization for short articles.** Articles that fit in a single chunk (≤ 600 words, the vast majority of news articles) now use the fallback prompt directly in one API call instead of the previous chunk-then-merge pipeline (two calls). This saves ~1 call per short article.
 - **Deterministic category classification.** `summarize_article()` no longer spends an API call on a cosmetic category label. `classify_article(title, url)` matches BBC and G1 URL patterns first (e.g. `/news/politics/` → "politics", `/economia/` → "business"), then falls back to title keywords. Returns `"other"` if nothing matches. Saves 1 call per article (8 calls/day with `article_limit=4`).
 - **BBC prioritized over G1.** The orchestrator already processes sources in the order they appear in `SOURCES`. With `SOURCES=bbc,g1` (the default), BBC always runs first and gets the full quota headroom. If `quota_exhausted` fires, only G1 articles are affected.
@@ -34,6 +60,35 @@ When the free-tier Gemini quota is exhausted mid-pipeline, some articles end up 
 
 - **New `_parse_retry_delay_seconds` / `_extract_retry_delay` helpers** in `summarizer.py`, exported and unit-tested.
 - **New `pipeline.FAILED_PLACEHOLDER` constant** = `"Summary generation failed."` so tests and downstream consumers can detect failed summaries reliably.
+
+### Fixed — Categories of existing summaries are re-derived on each run
+
+The classifier rule set expands over time (new title keywords, new URL patterns, new section mappings), but the category was only ever computed when an article was first summarized. Old articles stored in Firestore with `category: "other"` would keep that stale tag indefinitely, even when the new rules would have classified them correctly.
+
+- **`src/daily_bot/models.py`** — `Summary` gains a `section: str = ""` field. Persisted alongside the summary so re-derivation can use the source-provided section hint (the priority-2 input to `classify_article`).
+- **`src/daily_bot/__main__.py`** — `_process_one` now sets `summary.section = article.section` so the section is saved. `run_async` re-derives the category for every existing summary (using `classify_article(title, url, section)`) and persists the re-derived list back to Firestore as a single write. This means a previously "other"-tagged BBC article gets re-classified as `world`/`politics`/etc. on the next run without re-summarizing, and the public preview (`latestNews` Cloud Function) reflects the latest rules.
+- **`tests/integration/test_pipeline.py`** — new `test_existing_summaries_get_reclassified_on_load` verifies a pre-seeded `category: "other"` article gets re-derived to `world` from the "jerusalem" title keyword on the next run, with zero Gemini calls.
+
+### Fixed — Missing G1 URL patterns and Brazilian-political title keywords
+
+G1 articles about science (e.g. "Corredor de planetas") were defaulting to "other" because the `/ciencia/` URL pattern was missing, and Brazilian political stories without an obvious section path (e.g. "Deputado estadual Val Ceasa é alvo de buscas") fell through to the title-keyword fallback which lacked Portuguese political titles.
+
+- **`src/daily_bot/summarizer.py`** — `_URL_CATEGORY_RULES` gains `/ciencia/` (science), `/bemestar/` (health), `/agro/` (business). `_TITLE_CATEGORY_RULES` gains Brazilian political titles (deputado, senadora, vereador, lula, bolsonaro, stf, tse, etc.), astronomy/space keywords (planeta, alinhamento, galaxia, telescopio, buraco negro, spacex), and more health keywords (bipolar, depression, mental health, surgery, transplant).
+
+### Added — `--to EMAIL` CLI flag
+
+The CLI now accepts `--to EMAIL` to send the digest to a single subscriber (must be an existing subscriber). Useful for verifying updated template content without spamming the full list. Real SMTP is used; combine with `--dry-run` to skip the send.
+
+- **`src/daily_bot/__main__.py`** — `--to` parsed by `_parse_args`, threaded through `run()` → `run_async()`. The dispatch loop filters each preference group's recipient list to only include the matching address; groups that don't contain the address are skipped.
+- **`tests/integration/test_pipeline.py`** — `test_to_flag_sends_to_one_subscriber_only` and `test_to_flag_skips_when_recipient_not_in_group` verify the filter behavior.
+
+### Added — `scripts/rederive_categories.py` maintenance tool
+
+One-shot script to re-derive categories for a given date's `dailySummaries` doc and persist the result. The orchestrator already does this on every normal run; the script is useful when you only want the re-derive without firing the scrape/summarize pipeline.
+
+### Fixed — `--help` no longer silently runs the full pipeline
+
+Earlier the CLI had no explicit handling for `--help` / `-h`, so `python -m daily_bot --help` silently fell through to the live SMTP dispatch and emailed all subscribers. Help is now parsed explicitly: it prints usage and exits 0 without touching the pipeline. Bare `python -m daily_bot` (live mode) now logs a loud warning so an accidental run never silently emails the list.
 
 ### Fixed — BBC article classification now works (audit 2026-06-17)
 

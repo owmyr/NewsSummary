@@ -18,7 +18,23 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    google_api_key: str = Field(..., description="Google Gemini API key")
+    google_api_key: str = Field(default="", description="Google Gemini API key (empty = don't use Gemini)")
+
+    groq_api_key: str = Field(
+        default="",
+        description=(
+            "Groq API key. When set, English sources are summarized via Groq "
+            "(Llama 3.1 70B) instead of Gemini. Empty = use Gemini for everything."
+        ),
+    )
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq model name. llama-3.3-70b-versatile is recommended for summarization.",
+    )
+    groq_retries: int = Field(
+        default=3,
+        description="Groq API retry attempts. The free tier is generous (30 req/min) so 3 is usually enough.",
+    )
 
     firebase_credentials: str = Field(
         ...,
@@ -43,12 +59,20 @@ class Settings(BaseSettings):
         default="bbc",
         description="Comma-separated list of news source names to process",
     )
-    article_limit: int = Field(default=4, description="Number of articles to process per source")
+    article_limit: int = Field(default=3, description="Number of articles to process per source")
 
     gemini_model: str = Field(default="gemini-2.5-flash", description="Gemini model name")
     gemini_retries: int = Field(
         default=6,
         description="Gemini retry attempts. Higher values help survive 429 quota errors.",
+    )
+    gemini_min_call_interval_seconds: float = Field(
+        default=13.0,
+        description=(
+            "Minimum seconds between Gemini API calls. The free tier is 5 req/min; "
+            "spacing calls out by ~13s ensures we never burst the per-minute limit, "
+            "which is the most common cause of mid-run 429s."
+        ),
     )
 
     chunk_max_words: int = Field(default=600, description="Max words per chunk")

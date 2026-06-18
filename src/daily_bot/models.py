@@ -59,6 +59,15 @@ class Summary(BaseModel):
     category: str
     url: str = ""
     image_url: str = ""
+    section: str = Field(
+        default="",
+        description=(
+            "Source-specific section hint (e.g. BBC 'World' from "
+            "<meta property='article:section'>). Persisted with the summary so "
+            "the category can be re-derived on later loads when the classifier "
+            "rule set expands."
+        ),
+    )
 
 
 class Subscriber(BaseModel):

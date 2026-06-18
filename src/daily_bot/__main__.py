@@ -32,10 +32,12 @@ from . import db, health
 from .circuit_breaker import CircuitBreaker
 from .config import Settings, load_settings
 from .emailer import render_email_html, send_daily_digest_async
+from .groq_client import AsyncGroqClient
+from .llm_client import LLMClient
 from .models import Summary
 from .scraper import _build_client
 from .sources import NewsSource, default_registry
-from .summarizer import AsyncGeminiClient, summarize_article
+from .summarizer import AsyncGeminiClient, classify_article, summarize_article
 
 logger = logging.getLogger("daily_bot")
 
@@ -73,11 +75,30 @@ def _resolve_source(
         return None
 
 
+def _select_client(
+    language: str,
+    groq_client: AsyncGroqClient | None,
+    gemini_client: AsyncGeminiClient,
+) -> LLMClient:
+    """Route a source to the right LLM client based on language.
+
+    English sources go to Groq when configured (faster, higher free
+    tier). All other languages (including PT-BR and any future
+    non-English source) go to Gemini for best quality.
+
+    Falls back to Gemini when Groq isn't configured, so behavior is
+    unchanged for users who haven't set GROQ_API_KEY.
+    """
+    if language == "en" and groq_client is not None:
+        return groq_client
+    return gemini_client
+
+
 async def _process_one(
     settings: Settings,
     http_client: httpx.AsyncClient,
     source: NewsSource,
-    gemini: AsyncGeminiClient,
+    client: LLMClient,
     date_str: str,
     url: str,
     breaker: CircuitBreaker,
@@ -95,7 +116,7 @@ async def _process_one(
 
     try:
         summary = await summarize_article(
-            gemini,
+            client,
             article.content,
             article.title,
             settings,
@@ -110,6 +131,7 @@ async def _process_one(
     summary.source = article.source or source.name
     summary.url = url
     summary.image_url = article.image_url or ""
+    summary.section = article.section or ""
 
     try:
         existing = db.get_existing_summaries(date_str)
@@ -132,7 +154,7 @@ async def _process_source(
     settings: Settings,
     http_client: httpx.AsyncClient,
     source: NewsSource,
-    gemini: AsyncGeminiClient,
+    client: LLMClient,
     date_str: str,
     existing_urls: set[str],
     breaker: CircuitBreaker,
@@ -170,7 +192,7 @@ async def _process_source(
                 settings,
                 http_client,
                 source,
-                gemini,
+                client,
                 date_str,
                 url,
                 breaker,
@@ -186,6 +208,7 @@ FAILED_PLACEHOLDER = "Summary generation failed."
 async def _retry_failed_articles(
     settings: Settings,
     gemini: AsyncGeminiClient,
+    groq_client: AsyncGroqClient | None,
     breaker: CircuitBreaker,
     today_str: str,
     existing_summaries: list[Summary],
@@ -195,6 +218,10 @@ async def _retry_failed_articles(
     Used by ``--retry-failed`` mode. Articles that successfully summarized
     before are left untouched. Updates Firestore with the new summaries
     and re-renders the email template at the end.
+
+    The client per article is chosen by ``_select_client`` based on the
+    source language: English sources go to Groq (if configured), all
+    other languages go to Gemini.
     """
     failed = [s for s in existing_summaries if (s.summary or "").strip() == FAILED_PLACEHOLDER]
     if not failed:
@@ -231,9 +258,10 @@ async def _retry_failed_articles(
                 logger.error("Re-scrape returned None for %s", f.url)
                 still_failed.append(f)
                 continue
+            client = _select_client(source.language, groq_client, gemini)
             try:
                 new_summary = await summarize_article(
-                    gemini,
+                    client,
                     article.content,
                     article.title,
                     settings,
@@ -307,7 +335,12 @@ async def _retry_failed_articles(
     )
 
 
-async def run_async(settings: Settings, retry_failed_only: bool = False) -> None:
+async def run_async(
+    settings: Settings,
+    retry_failed_only: bool = False,
+    dry_run: bool = False,
+    to: str = "",
+) -> None:
     """Execute the full daily pipeline asynchronously.
 
     Args:
@@ -315,12 +348,32 @@ async def run_async(settings: Settings, retry_failed_only: bool = False) -> None
             every article already stored in today's dailySummaries whose
             ``summary`` matches ``FAILED_PLACEHOLDER``. Articles that
             successfully summarized previously are left alone.
+        dry_run: When True, run everything (scrape, summarize, render, save
+            template to Firestore, build preference groups) but DO NOT call
+            ``send_daily_digest_async``. The would-be dispatch is logged
+            instead. Useful for local end-to-end testing without spamming
+            subscribers. The email template is still saved to
+            ``emailTemplates/latest`` so the public preview site reflects
+            the rendered content.
+        to: When non-empty, send the digest to this email only. Must be an
+            existing subscriber; groups that don't contain this address
+            are skipped. Use for verifying updated template content without
+            spamming the full list.
     """
     today_str = datetime.now(UTC).strftime("%Y-%m-%d")
     logger.info("=== The Daily Bot starting (date=%s) ===", today_str)
 
     health.record_run_start(today_str)
     gemini = AsyncGeminiClient(settings)
+    groq_client: AsyncGroqClient | None = None
+    if settings.groq_api_key:
+        groq_client = AsyncGroqClient(settings)
+        logger.info(
+            "Groq client initialized (model=%s). English sources will use Groq.",
+            settings.groq_model,
+        )
+    else:
+        logger.info("GROQ_API_KEY not set; all sources will use Gemini.")
     breaker = CircuitBreaker(
         threshold=settings.circuit_breaker_threshold,
         cooldown_seconds=settings.circuit_breaker_cooldown_seconds,
@@ -344,11 +397,44 @@ async def run_async(settings: Settings, retry_failed_only: bool = False) -> None
                 existing_urls.add(str(a["url"]))
         logger.info("Already summarized today: %d articles", len(existing_urls))
 
-        existing_summaries: list[Summary] = [Summary(**a) for a in existing if a.get("title")]
+        existing_summaries: list[Summary] = []
+        for a in existing:
+            if a.get("title"):
+                s = Summary(**a)
+                # Re-derive the category from the latest rules. The classifier
+                # expands over time (new title keywords, new URL patterns, new
+                # section mappings), and the section is now persisted alongside
+                # the summary, so a previously "other"-tagged article can be
+                # correctly classified on the next run without re-summarizing.
+                s.category = classify_article(
+                    title=s.title,
+                    url=s.url,
+                    section=a.get("section", ""),
+                )
+                existing_summaries.append(s)
+
+        # Persist the re-derived categories back to Firestore so the
+        # public preview (latestNews Cloud Function) and the email template
+        # both reflect the latest classifier rules. This is a single write
+        # that runs only on days when there are no NEW articles to process
+        # -- otherwise _process_one() will save the full list anyway.
+        if existing_summaries:
+            try:
+                db.save_summaries(
+                    today_str,
+                    [s.model_dump() for s in existing_summaries],
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to persist re-classified summaries; continuing"
+                )
+
         new_summaries: list[Summary] = []
 
         if retry_failed_only:
-            await _retry_failed_articles(settings, gemini, breaker, today_str, existing_summaries)
+            await _retry_failed_articles(
+                settings, gemini, groq_client, breaker, today_str, existing_summaries
+            )
             return
 
         async with _build_client(settings) as http_client:
@@ -356,12 +442,20 @@ async def run_async(settings: Settings, retry_failed_only: bool = False) -> None
                 source = _resolve_source(name)
                 if source is None:
                     continue
+                client = _select_client(source.language, groq_client, gemini)
+                client_name = type(client).__name__
+                logger.info(
+                    "[%s] routing to %s (language=%s)",
+                    name,
+                    client_name,
+                    source.language,
+                )
                 try:
                     produced = await _process_source(
                         settings,
                         http_client,
                         source,
-                        gemini,
+                        client,
                         today_str,
                         existing_urls,
                         breaker,
@@ -414,7 +508,22 @@ async def run_async(settings: Settings, retry_failed_only: bool = False) -> None
             preference_groups[key].append(sub.email)
 
         sent, failed = 0, 0
+        total_recipients = 0
         for sources_key, emails in preference_groups.items():
+            # --to filter: keep only the requested recipient (must be a
+            # real subscriber). If --to is set and this group doesn't
+            # contain that address, skip the group entirely.
+            if to:
+                filtered = [e for e in emails if e == to]
+                if not filtered:
+                    logger.info(
+                        "[--to %s] skipping group %s (recipient not in this group)",
+                        to,
+                        sources_key,
+                    )
+                    continue
+                emails = filtered
+
             relevant_summaries: list[Summary] = []
             for src in sources_key:
                 relevant_summaries.extend(summaries_by_source.get(src, []))
@@ -425,6 +534,19 @@ async def run_async(settings: Settings, retry_failed_only: bool = False) -> None
                     sources_key,
                     len(emails),
                 )
+                continue
+
+            if dry_run:
+                logger.info(
+                    "[DRY-RUN] Would send digest to %d subscribers "
+                    "(sources=%s, %d articles) -- SMTP skipped",
+                    len(emails),
+                    sources_key,
+                    len(relevant_summaries),
+                )
+                for email in emails:
+                    logger.info("[DRY-RUN]   -> %s", email)
+                total_recipients += len(emails)
                 continue
 
             logger.info(
@@ -443,14 +565,28 @@ async def run_async(settings: Settings, retry_failed_only: bool = False) -> None
             sent += group_sent
             failed += group_failed
 
-        health.record_run_complete(
-            today_str,
-            scraped=len(new_summaries),
-            summarized=len(summaries),
-            sent=sent,
-            failed=failed,
-        )
-        logger.info("=== Run complete: %d sent, %d failed ===", sent, failed)
+        if dry_run:
+            logger.info(
+                "=== [DRY-RUN] Run complete: 0 sent, 0 failed "
+                "(%d recipients would have received an email) ===",
+                total_recipients,
+            )
+            health.record_run_complete(
+                today_str,
+                scraped=len(new_summaries),
+                summarized=len(summaries),
+                sent=0,
+                failed=0,
+            )
+        else:
+            health.record_run_complete(
+                today_str,
+                scraped=len(new_summaries),
+                summarized=len(summaries),
+                sent=sent,
+                failed=failed,
+            )
+            logger.info("=== Run complete: %d sent, %d failed ===", sent, failed)
     except Exception as exc:
         logger.exception("Unhandled error in pipeline")
         try:
@@ -460,7 +596,12 @@ async def run_async(settings: Settings, retry_failed_only: bool = False) -> None
         raise
 
 
-def run(settings: Settings, retry_failed_only: bool = False) -> None:
+def run(
+    settings: Settings,
+    retry_failed_only: bool = False,
+    dry_run: bool = False,
+    to: str = "",
+) -> None:
     """Synchronous entry point: configure logging, then run the async pipeline.
 
     Args:
@@ -468,14 +609,63 @@ def run(settings: Settings, retry_failed_only: bool = False) -> None:
             articles stored in today's dailySummaries that have a
             "Summary generation failed." placeholder. Useful after a quota
             exhaustion run.
+        dry_run: When True, run the full pipeline (scrape, summarize, render,
+            save template) but skip the SMTP dispatch. See ``run_async``.
+        to: When non-empty, send the digest to this email only. See ``run_async``.
     """
     _configure_logging(settings.log_level)
-    asyncio.run(run_async(settings, retry_failed_only=retry_failed_only))
+    asyncio.run(
+        run_async(
+            settings,
+            retry_failed_only=retry_failed_only,
+            dry_run=dry_run,
+            to=to,
+        )
+    )
 
 
-def _parse_args(argv: list[str]) -> dict[str, bool]:
+def _parse_args(argv: list[str]) -> dict[str, object]:
     """Parse minimal CLI flags without pulling in argparse."""
-    return {"retry_failed_only": "--retry-failed" in argv}
+    if "--help" in argv or "-h" in argv:
+        print(
+            "Usage: python -m daily_bot [OPTIONS]\n"
+            "\n"
+            "Options:\n"
+            "  --dry-run         Run the full pipeline (scrape, summarize, render,\n"
+            "                    save template to Firestore) but skip SMTP dispatch.\n"
+            "                    The would-be dispatch is logged instead. Safe to\n"
+            "                    use locally without spamming subscribers.\n"
+            "  --retry-failed    Re-summarize only the articles already stored in\n"
+            "                    today's dailySummaries whose summary matches the\n"
+            "                    failure placeholder. Use after a quota-exhaustion\n"
+            "                    run, or whenever you see 'Summary generation failed.'\n"
+            "                    in the digest.\n"
+            "  --to EMAIL        Send the digest to EMAIL only (must be an existing\n"
+            "                    subscriber). Useful for verifying updated template\n"
+            "                    content without spamming the full list. Real SMTP\n"
+            "                    is used; combine with --dry-run to skip the send.\n"
+            "  --help, -h        Show this message and exit.\n"
+            "\n"
+            "By default the pipeline runs end-to-end and emails the daily digest to\n"
+            "all subscribers via SMTP. Be careful: running without any flag WILL\n"
+            "send real emails to all subscribers in Firestore.\n",
+        )
+        sys.exit(0)
+
+    to_email = ""
+    if "--to" in argv:
+        idx = argv.index("--to")
+        if idx + 1 < len(argv):
+            to_email = argv[idx + 1]
+        else:
+            print("Error: --to requires an EMAIL argument", file=sys.stderr)
+            sys.exit(2)
+
+    return {
+        "retry_failed_only": "--retry-failed" in argv,
+        "dry_run": "--dry-run" in argv,
+        "to": to_email,
+    }
 
 
 def main() -> None:
@@ -485,10 +675,29 @@ def main() -> None:
     except Exception as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         sys.exit(1)
+    logger_start = logging.getLogger("daily_bot")
+    to_email = str(args.get("to", ""))
+    is_dry_run = bool(args["dry_run"])
+    if to_email and not is_dry_run:
+        logger_start.warning(
+            "=== --to %s: sending real email to ONE recipient (others skipped) ===",
+            to_email,
+        )
+    elif not is_dry_run:
+        logger_start.warning(
+            "=== Running in LIVE mode: emails will be sent to all subscribers. "
+            "Add --dry-run to skip SMTP dispatch. ==="
+        )
+    if is_dry_run:
+        logger_start.info("=== --dry-run mode: pipeline runs end-to-end, SMTP skipped ===")
     if args["retry_failed_only"]:
-        logger_start = logging.getLogger("daily_bot")
         logger_start.info("=== --retry-failed mode: re-summarizing failed articles only ===")
-    run(settings, **args)
+    run(
+        settings,
+        retry_failed_only=bool(args["retry_failed_only"]),
+        dry_run=is_dry_run,
+        to=to_email,
+    )
 
 
 if __name__ == "__main__":

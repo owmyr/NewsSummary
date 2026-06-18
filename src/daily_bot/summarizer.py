@@ -14,11 +14,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 
 from google import genai as _genai
 from google.genai import errors as _genai_errors
 
 from .config import Settings
+from .llm_client import LLMClient
 from .models import VALID_CATEGORIES, Summary
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,8 @@ def _extract_retry_delay(exc: _genai_errors.APIError) -> float | None:
 class AsyncGeminiClient:
     """Thin async wrapper around the new google-genai SDK with retries + backoff.
 
+    Satisfies the :class:`daily_bot.llm_client.LLMClient` protocol.
+
     Retries honor the API's own ``retryDelay`` hint on 429 quota errors
     (clamped to ``_RETRY_DELAY_CAP_SECONDS``) so we don't waste retries
     by sleeping too short, or stall the pipeline by waiting 60+ seconds
@@ -93,16 +97,46 @@ class AsyncGeminiClient:
         self._client = _genai.Client(api_key=settings.google_api_key)
         self._model = settings.gemini_model
         self._retries = settings.gemini_retries
-        self._quota_exhausted: bool = False
+        self._min_interval = settings.gemini_min_call_interval_seconds
+        self._quota_exhausted_at: float | None = None
+        self._last_call_at: float | None = None
 
     @property
     def quota_exhausted(self) -> bool:
-        """True once a 429/RESOURCE_EXHAUSTED error has been seen."""
-        return self._quota_exhausted
+        """True when the per-minute or daily quota is currently latched.
+
+        The latch auto-clears after ``_RETRY_DELAY_CAP_SECONDS`` (65s), so a
+        per-minute burst doesn't poison the rest of the run. A genuine
+        daily-exhaustion run will keep hitting the latch and the user
+        notices via ``--retry-failed``.
+        """
+        if self._quota_exhausted_at is None:
+            return False
+        if (time.monotonic() - self._quota_exhausted_at) > _RETRY_DELAY_CAP_SECONDS:
+            self._quota_exhausted_at = None
+            return False
+        return True
 
     def reset_quota_exhausted(self) -> None:
         """Clear the quota-exhausted latch (e.g. after a manual quota reset)."""
-        self._quota_exhausted = False
+        self._quota_exhausted_at = None
+
+    async def _throttle(self) -> None:
+        """Sleep just enough so consecutive calls respect ``_min_interval``.
+
+        The Gemini free tier is 5 req/min. If the per-article summary uses
+        2-3 calls (chunk + merge + category) and the per-call latency is
+        ~13s, the calls naturally land within 13s of each other — but a
+        shorter call followed by a longer one can stack up. This guard
+        enforces a hard minimum spacing so a fast response can't sneak
+        the next request into the same per-minute bucket.
+        """
+        if self._min_interval <= 0 or self._last_call_at is None:
+            return
+        elapsed = time.monotonic() - self._last_call_at
+        wait = self._min_interval - elapsed
+        if wait > 0:
+            await asyncio.sleep(wait)
 
     async def generate(self, prompt: str) -> str | None:
         """Generate text from a prompt with retries. Returns None on failure.
@@ -110,20 +144,24 @@ class AsyncGeminiClient:
         Quota error policy: on the *first* 429/RESOURCE_EXHAUSTED we retry
         once after the API-suggested delay (clamped to
         ``_RETRY_DELAY_CAP_SECONDS``). A *second* consecutive quota error
-        is a strong signal of real daily exhaustion, so we latch the
-        ``quota_exhausted`` flag and every later call in this run returns
-        ``None`` immediately without making a network request. This
-        prevents a per-minute burst from killing the entire run while
-        still capping the burn when the daily cap is hit.
+        latches the ``quota_exhausted`` flag and every later call returns
+        ``None`` immediately without making a network request.
+
+        The latch is time-based: it auto-clears after
+        ``_RETRY_DELAY_CAP_SECONDS`` so a per-minute burst doesn't kill
+        the rest of the run. A genuine daily-exhaustion run will keep
+        re-latching and is best recovered via ``--retry-failed``.
         """
-        if self._quota_exhausted:
+        if self.quota_exhausted:
             return None
         for attempt in range(1, self._retries + 1):
+            await self._throttle()
             try:
                 response = await self._client.aio.models.generate_content(
                     model=self._model,
                     contents=prompt,
                 )
+                self._last_call_at = time.monotonic()
                 text = getattr(response, "text", None)
                 if text:
                     return text.strip()
@@ -157,18 +195,22 @@ class AsyncGeminiClient:
                         )
                         await asyncio.sleep(wait)
                         continue
-                    # Second (or later) consecutive quota error: real
-                    # daily exhaustion. Latch and bail.
-                    self._quota_exhausted = True
+                    # Second (or later) consecutive quota error: latch
+                    # with a timestamp. The latch auto-clears after
+                    # _RETRY_DELAY_CAP_SECONDS, so a per-minute burst
+                    # doesn't poison the entire run.
+                    self._quota_exhausted_at = time.monotonic()
+                    self._last_call_at = time.monotonic()
                     logger.error(
                         "Gemini quota exhausted (attempt %d/%d, code=%s, status=%s): %s. "
-                        "All subsequent calls in this run will short-circuit. "
+                        "Calls will short-circuit for the next %ss. "
                         "Suggested retry delay from API: %ss",
                         attempt,
                         self._retries,
                         code,
                         status,
                         str(exc)[:160],
+                        _RETRY_DELAY_CAP_SECONDS,
                         f"{api_delay:.1f}" if api_delay is not None else "n/a",
                     )
                     return None
@@ -325,10 +367,13 @@ _URL_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
     # G1 URL patterns (g1.globo.com/<section>/noticia/...)
     ("/g1-globo-de/", "world"),  # international edition
     ("/ciencia-e-saude/", "science"),
+    ("/ciencia/", "science"),  # pure science section (e.g. planetary alignment)
     ("/tecnologia/", "tech"),
     ("/economia/", "business"),
     ("/negocios/", "business"),
     ("/mercados/", "business"),
+    ("/agro/", "business"),  # agribusiness
+    ("/bemestar/", "health"),
     ("/politica/", "politics"),
     ("/saude/", "health"),
     ("/mundo/", "world"),
@@ -368,7 +413,40 @@ _SECTION_CATEGORY_MAP: dict[str, str] = {
 # Order matters: more specific phrases AND country/region terms come first
 # so e.g. "UK government" → "uk" beats "government" → "politics".
 _TITLE_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
-    # Region/country (most specific, must beat generic politics keywords)
+    # Business / market phrases MUST come before generic world keywords like
+    # "crash" — "Stock market crash" should be business, not world.
+    # Business
+    ("stock market", "business"),
+    ("wall street", "business"),
+    ("interest rate", "business"),
+    ("tariff", "business"),
+    ("oil price", "business"),
+    # World/region (most specific, must beat generic politics keywords)
+    ("jerusalem", "world"),
+    ("israel", "world"),
+    ("gaza", "world"),
+    ("palestinian", "world"),
+    ("iran", "world"),
+    ("russia", "world"),
+    ("ukraine", "world"),
+    ("china", "world"),
+    ("korea", "world"),
+    ("japan", "world"),
+    ("india", "world"),
+    ("texas", "world"),
+    ("california", "world"),
+    ("florida", "world"),
+    ("mexico", "world"),
+    ("canada", "world"),
+    ("brazil", "world"),
+    ("argentina", "world"),
+    ("africa", "world"),
+    ("migrant", "world"),
+    ("crash", "world"),
+    ("rescue", "world"),
+    ("earthquake", "world"),
+    ("flood", "world"),
+    ("storm", "world"),
     ("britain", "uk"),
     ("british", "uk"),
     ("england", "uk"),
@@ -381,25 +459,49 @@ _TITLE_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
     (" eu ", "europe"),
     ("eu)", "europe"),
     # Health (specific phrases first)
+    ("cancer", "health"),
+    ("diagnosis", "health"),
     ("covid-19", "health"),
     ("covid", "health"),
     ("vaccine", "health"),
     ("vaccination", "health"),
     ("hospital", "health"),
+    ("doctor", "health"),
+    ("patient", "health"),
+    ("bipolar", "health"),
+    ("depression", "health"),
+    ("mental health", "health"),
+    ("surgery", "health"),
+    ("transplant", "health"),
     # Science
     ("climate change", "science"),
     ("artificial intelligence", "tech"),
     ("machine learning", "tech"),
     ("quantum", "science"),
     ("nasa", "science"),
+    # Science: astronomy / planetary / space
+    ("planeta", "science"),
+    ("alinhamento", "science"),
+    ("astronomia", "science"),
+    ("galáxia", "science"),
+    ("galaxia", "science"),
+    ("telescópio", "science"),
+    ("telescopio", "science"),
+    ("buraco negro", "science"),
+    ("spacex", "science"),
+    ("mars ", "science"),
     # Tech
     ("startup", "tech"),
     ("software", "tech"),
     ("chip", "tech"),
+    ("openai", "tech"),
+    ("tech giant", "tech"),
     # Business
     ("stock market", "business"),
     ("wall street", "business"),
     ("interest rate", "business"),
+    ("tariff", "business"),
+    ("oil price", "business"),
     # Politics
     ("parliament", "politics"),
     ("election", "politics"),
@@ -408,6 +510,31 @@ _TITLE_CATEGORY_RULES: tuple[tuple[str, str], ...] = (
     ("president", "politics"),
     ("congress", "politics"),
     ("senate", "politics"),
+    ("white house", "politics"),
+    ("trump", "politics"),
+    ("biden", "politics"),
+    ("lawyers", "politics"),
+    ("defence", "politics"),
+    ("trial", "politics"),
+    ("court", "politics"),
+    ("judge", "politics"),
+    ("verdict", "politics"),
+    # Brazilian political titles (G1 carries heavy domestic politics)
+    ("deputado", "politics"),
+    ("deputada", "politics"),
+    ("vereador", "politics"),
+    ("vereadora", "politics"),
+    ("senador", "politics"),
+    ("senadora", "politics"),
+    ("ministro ", "politics"),
+    ("ministra ", "politics"),
+    ("lula", "politics"),
+    ("bolsonaro", "politics"),
+    ("pt ", "politics"),
+    ("pl ", "politics"),
+    ("pf ", "politics"),  # Policia Federal operations on politicians
+    ("stf", "politics"),
+    ("tse", "politics"),
     # Generic fallbacks
     ("inflation", "business"),
     ("economy", "business"),
@@ -466,7 +593,7 @@ def classify_article(title: str = "", url: str = "", section: str = "") -> str:
 
 
 async def summarize_article(
-    client: AsyncGeminiClient,
+    client: LLMClient,
     article_text: str,
     title: str,
     settings: Settings,

@@ -9,20 +9,43 @@ from daily_bot.config import Settings, load_settings
 from daily_bot.models import VALID_CATEGORIES, ScrapedArticle, Subscriber, Summary
 
 
-def test_settings_require_google_api_key(monkeypatch: pytest.MonkeyPatch, tmp_path):
-    # Clear env vars and use a class that doesn't read .env
-    for var in ("GOOGLE_API_KEY", "FIREBASE_CREDENTIALS", "SENDER_EMAIL", "SENDER_PASSWORD"):
+def test_settings_google_api_key_optional(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    # GOOGLE_API_KEY is now optional: with the Groq fallback path, a
+    # user can run the pipeline using only Groq. Other required
+    # fields (firebase_credentials, sender_email, sender_password) are
+    # still enforced.
+    for var in ("GOOGLE_API_KEY", "GROQ_API_KEY", "FIREBASE_CREDENTIALS", "SENDER_EMAIL", "SENDER_PASSWORD"):
         monkeypatch.delenv(var, raising=False)
 
     class NoEnvSettings(Settings):
         model_config = {"env_file": None, "extra": "ignore"}
 
-    with pytest.raises(ValidationError):
-        NoEnvSettings(  # type: ignore[call-arg]
-            firebase_credentials="{}",
-            sender_email="a@b.c",
-            sender_password="password",
-        )
+    # No ValidationError: GOOGLE_API_KEY and GROQ_API_KEY are both optional.
+    settings = NoEnvSettings(  # type: ignore[call-arg]
+        firebase_credentials="{}",
+        sender_email="a@b.c",
+        sender_password="password",
+    )
+    assert settings.google_api_key == ""
+    assert settings.groq_api_key == ""
+
+
+def test_settings_groq_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    # Groq settings have sensible defaults: model=llama-3.3-70b-versatile,
+    # retries=3.
+    for var in ("GOOGLE_API_KEY", "GROQ_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+    class NoEnvSettings(Settings):
+        model_config = {"env_file": None, "extra": "ignore"}
+
+    settings = NoEnvSettings(  # type: ignore[call-arg]
+        firebase_credentials="{}",
+        sender_email="a@b.c",
+        sender_password="password",
+    )
+    assert settings.groq_model == "llama-3.3-70b-versatile"
+    assert settings.groq_retries == 3
 
 
 def test_settings_require_firebase_credentials(monkeypatch: pytest.MonkeyPatch):
@@ -75,7 +98,7 @@ def test_settings_defaults(test_settings: Settings):
     assert test_settings.smtp_host == "smtp.gmail.com"
     assert test_settings.smtp_port == 465
     assert test_settings.bbc_news_url == "https://www.bbc.com/news"
-    assert test_settings.article_limit == 4
+    assert test_settings.article_limit == 3
     assert test_settings.gemini_model == "gemini-2.5-flash"
     assert test_settings.gemini_retries == 6
     assert test_settings.scrape_concurrency == 5

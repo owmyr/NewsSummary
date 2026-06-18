@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Daily Bot** is an async Python pipeline that scrapes news from configurable sources (BBC News in English, G1 in Portuguese), summarizes articles with Google Gemini, and emails tailored digests to Firestore-managed subscribers based on their per-subscriber source preferences. Runs daily via GitHub Actions cron at 09:00 UTC.
+**Daily Bot** is an async Python pipeline that scrapes news from configurable sources (BBC News in English, G1 in Portuguese), summarizes articles with Google Gemini (and optionally Groq for English sources), and emails tailored digests to Firestore-managed subscribers based on their per-subscriber source preferences. Runs daily via GitHub Actions cron at 09:00 UTC.
 
 - **Package**: `daily-bot` v2.0.0
 - **Python**: 3.12 (3.11+ required)
@@ -15,9 +15,13 @@
 
 ```bash
 pip install -e ".[dev]"          # Install package with dev deps
-python -m daily_bot              # Run the pipeline
+python -m daily_bot              # Run the pipeline (emails all subscribers)
+python -m daily_bot --dry-run    # Run end-to-end but skip SMTP dispatch
+python -m daily_bot --to EMAIL   # Send the digest to EMAIL only (must be a subscriber)
 python -m daily_bot --retry-failed   # Re-summarize only failed articles from today
-pytest                           # Run all 236 tests
+python -m daily_bot --help       # Print usage and exit
+python scripts/rederive_categories.py   # Re-derive categories for today's summaries
+pytest                           # Run all 255 tests
 pytest --cov=daily_bot           # Tests with coverage
 pytest tests/unit/               # Unit tests only
 pytest tests/integration/        # Integration tests only
@@ -37,6 +41,8 @@ src/daily_bot/
 ├── models.py                # ScrapedArticle, Summary, Subscriber, EmailSendResult, Category
 ├── scraper.py               # Async httpx scraper (BBC-specific helpers, _extract_section)
 ├── summarizer.py            # AsyncGeminiClient (google-genai SDK), language-aware prompts
+├── groq_client.py           # AsyncGroqClient (groq SDK), routes English sources to Groq when configured
+├── llm_client.py            # LLMClient protocol (provider-agnostic interface)
 ├── emailer.py               # Jinja2 template -> HTML, SMTP batch dispatch
 ├── db.py                    # Firestore lazy-init data layer (get_all_subscribers, etc.)
 ├── circuit_breaker.py       # CircuitBreaker (CLOSED->OPEN->HALF_OPEN)
@@ -56,6 +62,7 @@ tests/
 │   ├── test_config_and_models.py
 │   ├── test_emailer.py
 │   ├── test_g1_scraper.py   # G1 source URL extraction, article scraping, section mapping
+│   ├── test_groq_client.py  # AsyncGroqClient construction, generate, retry, model selection
 │   ├── test_scraper.py
 │   ├── test_sources.py
 │   └── test_summarizer.py
@@ -124,7 +131,17 @@ functions/                   # Cloud Functions (Node.js)
 - All I/O uses `httpx.AsyncClient` + `asyncio.gather`
 - SMTP is blocking -> wrapped in `asyncio.to_thread()`
 - Gemini SDK: `client.aio.models.generate_content()` for async
+- Groq SDK: `client.chat.completions.create()` (async by default)
 - Tests use `asyncio_mode = "auto"` in pytest — no `@pytest.mark.asyncio` needed
+
+### LLM Provider Routing
+
+- `_select_client(language, groq_client, gemini)` in `__main__.py` chooses the LLM provider per source.
+- **English sources** (e.g. BBC) → Groq (when `GROQ_API_KEY` is set), else Gemini.
+- **All other languages** (e.g. Portuguese G1) → Gemini (better non-English quality).
+- Both `AsyncGroqClient` and `AsyncGeminiClient` satisfy the `LLMClient` protocol in `llm_client.py` — the same `generate()` / `generate_many()` interface.
+- When `GROQ_API_KEY` is unset, the pipeline is identical to the Gemini-only version. Set it in `.env` or as a GitHub secret to enable Groq.
+- `AsyncGroqClient` uses simple retry-with-exponential-backoff (no quota-exhaustion latch needed; Groq free tier is 30 req/min and ~1440 req/day).
 
 ### Firestore Collections
 
@@ -138,7 +155,7 @@ functions/                   # Cloud Functions (Node.js)
 
 ### Config (Pydantic BaseSettings)
 
-All settings in `config.py`, loaded from `.env` or env vars. Required: `GOOGLE_API_KEY`, `FIREBASE_CREDENTIALS`, `SENDER_EMAIL`, `SENDER_PASSWORD`. Everything else has defaults. Notable: `SOURCES="bbc,g1"`, `G1_HOMEPAGE_URL="https://g1.globo.com"`, `BBC_NEWS_URL="https://www.bbc.com/news"`.
+All settings in `config.py`, loaded from `.env` or env vars. Required: `FIREBASE_CREDENTIALS`, `SENDER_EMAIL`, `SENDER_PASSWORD`. At least one of `GOOGLE_API_KEY` or `GROQ_API_KEY` should be set (otherwise the pipeline cannot summarize any articles). Everything else has defaults. Notable: `SOURCES="bbc,g1"`, `G1_HOMEPAGE_URL="https://g1.globo.com"`, `BBC_NEWS_URL="https://www.bbc.com/news"`, `GROQ_API_KEY=""` (opt-in), `GROQ_MODEL="llama-3.3-70b-versatile"`, `GROQ_RETRIES=3`.
 
 ### Important Import Bindings
 
@@ -156,6 +173,7 @@ All settings in `config.py`, loaded from `.env` or env vars. Required: `GOOGLE_A
 ## Testing Notes
 
 - `FakeGeminiClient` in conftest returns scripted responses in order. PT-BR tests need additional scripted responses (chunk + final + category = 3 calls minimum).
+- `FakeGeminiClient` also works as a stand-in for `AsyncGroqClient` in integration tests — both satisfy the `LLMClient` protocol. To exercise the Groq path specifically, see `test_groq_client.py` for the `_StubGroqClient` pattern.
 - `httpx.MockTransport` for HTTP mocking (not `respx` or `aioresponses`)
 - `NoEnvSettings(Settings)` subclass with `env_file=None` isolates tests from `.env`
 - `MockFirestoreClient` in integration tests patches `daily_bot.db.get_db`. Subclass per test with `subscriber_docs=` for different preference scenarios.
@@ -174,4 +192,6 @@ All settings in `config.py`, loaded from `.env` or env vars. Required: `GOOGLE_A
 - **Subscriber migration**: Existing Firestore subscribers without `sources` field default to `["bbc"]` on read. No manual migration needed.
 - **MIME body in tests**: `SMTP.sendmail()` captures base64-encoded HTML. To assert on rendered content, decode it first using the `_extract_html_body()` helper from `tests/integration/test_subscriber_routing.py`.
 - **BBC article URLs**: Real BBC URLs are `https://www.bbc.com/news/articles/<hash>` — they carry no section in the path. The section must come from page metadata (extracted by `_extract_section()` in `scraper.py`). If you add a new BBC-like source whose URLs also lack a section path, populate `ScrapedArticle.section` in the scrape step.
-- **Gemini free-tier quota**: The free tier is **5 req/min, 20 req/day**. With `SOURCES=bbc,g1` and `article_limit=4` (default), the pipeline uses **8-16 API calls/day** (1-2 per short article, 2-3 per long article, **0 for category classification**). BBC is processed first and always fits; G1 fits on most days. Two optimizations keep the daily budget in check: (1) **short articles** (≤ 1 chunk) use a single fallback prompt instead of the chunk-merge step, and (2) **category classification is deterministic** (URL pattern + source-provided section + title keyword matching) so no API call is spent on a cosmetic email-card label. If the quota is exhausted mid-run, some articles will have `summary: "Summary generation failed."`. The `AsyncGeminiClient` latches a `quota_exhausted` flag on the **second consecutive** 429 (first 429 retries once with the API's suggested `retryDelay`, capped at 65s) so subsequent calls short-circuit instantly. To recover: wait for the quota to reset, then re-run `python -m daily_bot --retry-failed`. To stay under the per-minute cap, keep `summarize_concurrency=1`.
+- **Gemini free-tier quota**: The free tier is **5 req/min, 20 req/day**. With `SOURCES=bbc,g1` and `article_limit=3` (default), the pipeline uses **6-9 API calls/day** for G1 only (BBC uses Groq). Each short article is 1 call; longer articles (2+ chunks) take 2-3 calls; **category classification is deterministic** (URL pattern + section + title keyword) so it costs 0 calls. The `AsyncGeminiClient` latches a `quota_exhausted` flag on the **second consecutive** 429, but the latch is now **time-based** and auto-clears after 65s, so a per-minute burst doesn't poison the rest of the run. To recover from a real daily exhaustion: wait for the quota to reset, then re-run `python -m daily_bot --retry-failed`. **Inter-call throttling** (`gemini_min_call_interval_seconds=13`) plus `summarize_concurrency=1` keeps calls comfortably under the 5 req/min cap.
+- **Groq opt-in**: `GROQ_API_KEY` defaults to an empty string. Without it, all sources (including English ones) use Gemini. Set it in `.env` or as a GitHub secret to route English sources to Groq and leave Gemini quota for PT-BR / non-English sources.
+- **Groq model**: The default `llama-3.3-70b-versatile` works well for English summarization. Other Groq models can be selected via `GROQ_MODEL`.

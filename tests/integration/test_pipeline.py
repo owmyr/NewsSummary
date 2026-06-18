@@ -172,6 +172,7 @@ async def test_full_pipeline_runs_end_to_end(
     test_settings.summarize_concurrency = 2
     test_settings.email_batch_size = 10
     test_settings.email_batch_delay_seconds = 0
+    test_settings.article_limit = 4  # Use 4 for this test (override default of 3)
 
     _patch_http(article_html, bbc_homepage_html)
 
@@ -250,6 +251,165 @@ async def test_pipeline_aborts_cleanly_when_no_urls(
         with patch("daily_bot.__main__.AsyncGeminiClient", return_value=fake_gemini):
             # Should not raise
             await pipeline.run_async(test_settings)
+
+
+async def test_dry_run_skips_smtp_but_saves_template(
+    test_settings: Settings,
+    bbc_homepage_html: str,
+    article_html: str,
+):
+    """--dry-run should run scrape+summary+render but skip SMTP dispatch."""
+    test_settings.scrape_concurrency = 2
+    test_settings.summarize_concurrency = 2
+    test_settings.email_batch_size = 10
+    test_settings.email_batch_delay_seconds = 0
+    test_settings.article_limit = 3
+
+    _patch_http(article_html, bbc_homepage_html)
+
+    # 3 articles, each short -> 1 fallback call per article.
+    fake_gemini = FakeGeminiClient(responses=[f"Summary of article {i}." for i in range(3)])
+
+    subscribers = ["a@x.com", "b@x.com", "c@x.com"]
+    firestore = MockFirestoreClient(subscribers=subscribers)
+    smtp_calls: list[tuple[str, str]] = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, *a, **kw):
+            pass
+
+        def sendmail(self, sender, recipient, message):
+            smtp_calls.append((sender, recipient))
+
+    with patch("daily_bot.db.get_db", return_value=firestore):
+        with patch("daily_bot.__main__.AsyncGeminiClient", return_value=fake_gemini):
+            with patch("daily_bot.emailer.smtplib.SMTP_SSL", FakeSMTP):
+                await pipeline.run_async(test_settings, dry_run=True)
+
+    # Summaries should be persisted
+    daily_summaries_coll = firestore._collections.get("dailySummaries")
+    assert daily_summaries_coll is not None
+    last_set_doc = list(daily_summaries_coll.docs.values())[-1]
+    assert len(last_set_doc._data.get("articles", [])) == 3
+
+    # Template should be saved (so the public preview site reflects it)
+    template_coll = firestore._collections.get("emailTemplates")
+    assert template_coll is not None
+    last_template_doc = list(template_coll.docs.values())[-1]
+    assert "<!DOCTYPE html>" in last_template_doc._data.get("html", "")
+
+    # But NO SMTP calls and NO email_log entries -- the whole point of dry-run
+    assert smtp_calls == []
+    email_log_coll = firestore._collections.get("email_log")
+    assert email_log_coll is None or email_log_coll.added == []
+
+
+async def test_to_flag_sends_to_one_subscriber_only(
+    test_settings: Settings,
+    bbc_homepage_html: str,
+    article_html: str,
+):
+    """--to EMAIL should send the digest to that one subscriber and skip the rest."""
+    test_settings.scrape_concurrency = 2
+    test_settings.summarize_concurrency = 2
+    test_settings.email_batch_size = 10
+    test_settings.email_batch_delay_seconds = 0
+    test_settings.article_limit = 2
+
+    _patch_http(article_html, bbc_homepage_html)
+
+    fake_gemini = FakeGeminiClient(responses=[f"Summary of article {i}." for i in range(2)])
+
+    subscribers = ["alice@x.com", "bob@x.com", "carol@x.com"]
+    firestore = MockFirestoreClient(subscribers=subscribers)
+    smtp_calls: list[tuple[str, str]] = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, *a, **kw):
+            pass
+
+        def sendmail(self, sender, recipient, message):
+            smtp_calls.append((sender, recipient))
+
+    with patch("daily_bot.db.get_db", return_value=firestore):
+        with patch("daily_bot.__main__.AsyncGeminiClient", return_value=fake_gemini):
+            with patch("daily_bot.emailer.smtplib.SMTP_SSL", FakeSMTP):
+                await pipeline.run_async(test_settings, to="bob@x.com")
+
+    # Only bob should have been emailed, not alice or carol.
+    assert len(smtp_calls) == 1
+    sender, recipient = smtp_calls[0]
+    assert recipient == "bob@x.com"
+    # And only bob should appear in the email_log.
+    email_log_coll = firestore._collections.get("email_log")
+    assert email_log_coll is not None
+    assert len(email_log_coll.added) == 1
+    assert email_log_coll.added[0]["email"] == "bob@x.com"
+
+
+async def test_to_flag_skips_when_recipient_not_in_group(
+    test_settings: Settings,
+    bbc_homepage_html: str,
+    article_html: str,
+):
+    """--to EMAIL should send nothing if EMAIL is not a subscriber."""
+    test_settings.scrape_concurrency = 2
+    test_settings.summarize_concurrency = 2
+    test_settings.email_batch_size = 10
+    test_settings.email_batch_delay_seconds = 0
+    test_settings.article_limit = 2
+
+    _patch_http(article_html, bbc_homepage_html)
+
+    fake_gemini = FakeGeminiClient(responses=[f"Summary of article {i}." for i in range(2)])
+
+    subscribers = ["alice@x.com", "carol@x.com"]
+    firestore = MockFirestoreClient(subscribers=subscribers)
+    smtp_calls: list[tuple[str, str]] = []
+
+    class FakeSMTP:
+        def __init__(self, *a, **kw):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def login(self, *a, **kw):
+            pass
+
+        def sendmail(self, sender, recipient, message):
+            smtp_calls.append((sender, recipient))
+
+    with patch("daily_bot.db.get_db", return_value=firestore):
+        with patch("daily_bot.__main__.AsyncGeminiClient", return_value=fake_gemini):
+            with patch("daily_bot.emailer.smtplib.SMTP_SSL", FakeSMTP):
+                # bob isn't a subscriber
+                await pipeline.run_async(test_settings, to="bob@x.com")
+
+    assert smtp_calls == []
+    email_log_coll = firestore._collections.get("email_log")
+    assert email_log_coll is None or email_log_coll.added == []
 
 
 async def test_pipeline_short_circuits_when_circuit_breaker_opens(
@@ -435,6 +595,7 @@ async def test_section_metadata_drives_bbc_classification(
     test_settings.summarize_concurrency = 1
     test_settings.email_batch_size = 10
     test_settings.email_batch_delay_seconds = 0
+    test_settings.article_limit = 4  # Override default of 3 to test with 4 articles
 
     # Article HTML with a section meta tag. Note the URL doesn't include
     # any section path -- this is the real BBC URL format.
@@ -475,3 +636,94 @@ async def test_section_metadata_drives_bbc_classification(
         assert article["category"] == "world", (
             f"Expected 'world' from section meta, got {article['category']!r} for {article['url']}"
         )
+
+
+async def test_existing_summaries_get_reclassified_on_load(
+    test_settings: Settings,
+):
+    """Old summaries stored with category='other' get re-derived on load.
+
+    This covers the case where the classifier rule set expands (e.g. a new
+    title keyword is added) after an article was first summarized. On the
+    next run, the orchestrator should re-derive the category from the
+    latest rules rather than trusting the stale stored value.
+    """
+    from daily_bot import __main__ as pipeline
+    from daily_bot.config import Settings
+    from datetime import UTC, datetime
+
+    test_settings.scrape_concurrency = 1
+    test_settings.summarize_concurrency = 1
+
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+
+    # Pre-seed Firestore with a previously-stored article whose category is
+    # "other" but whose title now matches a known keyword ("jerusalem" -> world).
+    pre_existing_articles = [
+        {
+            "title": "Status quo at Jerusalem holiest site under threat",
+            "summary": "Existing summary text.",
+            "category": "other",  # <-- stale; should be re-derived
+            "url": "https://www.bbc.com/news/articles/old-jerusalem",
+            "source": "bbc",
+            "image_url": "",
+            "section": "",
+        },
+    ]
+    firestore = MockFirestoreClient(
+        subscribers=[],
+        pre_existing_articles=pre_existing_articles,
+    )
+
+    # No new scraping — the pipeline should NOT call Gemini (the only URL
+    # in the homepage is the dedup target so it gets skipped, but we set
+    # the homepage to empty to be safe).
+    empty_homepage = "<html><body><a href='/news'>News</a></body></html>"
+    _patch_http(article_html="<html></html>", bbc_homepage_html=empty_homepage)
+
+    fake_gemini = FakeGeminiClient(responses=[])
+
+    with patch("daily_bot.db.get_db", return_value=firestore):
+        with patch("daily_bot.__main__.AsyncGeminiClient", return_value=fake_gemini):
+            await pipeline.run_async(test_settings)
+
+    # The pre-existing article should be re-categorized as "world" from
+    # the title keyword "jerusalem". The orchestrator writes the re-derived
+    # list back to Firestore as part of the normal save flow.
+    daily_summaries_coll = firestore._collections.get("dailySummaries")
+    assert daily_summaries_coll is not None
+    last_set_doc = list(daily_summaries_coll.docs.values())[-1]
+    saved = last_set_doc._data.get("articles", [])
+    assert len(saved) == 1
+    assert saved[0]["category"] == "world", (
+        f"Expected re-derived 'world' from 'jerusalem' keyword, got "
+        f"{saved[0]['category']!r}"
+    )
+    # And no Gemini call was made (only re-derivation, no re-summarization).
+    assert fake_gemini.calls == []
+
+
+def test_help_flag_prints_usage_and_exits():
+    """`--help` and `-h` should print usage and exit without running the pipeline.
+
+    This guards against the bug where running `python -m daily_bot --help`
+    silently fell through to the live SMTP dispatch because no flag was
+    matched. The CLI now treats help as a special case.
+    """
+    import subprocess
+    import sys
+
+    for flag in ("--help", "-h"):
+        result = subprocess.run(
+            [sys.executable, "-m", "daily_bot", flag],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        assert result.returncode == 0, (
+            f"{flag} should exit 0, got {result.returncode}: "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert "Usage:" in result.stdout
+        assert "--dry-run" in result.stdout
+        assert "--retry-failed" in result.stdout
