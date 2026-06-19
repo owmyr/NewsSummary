@@ -356,7 +356,7 @@ async def test_to_flag_sends_to_one_subscriber_only(
 
     # Only bob should have been emailed, not alice or carol.
     assert len(smtp_calls) == 1
-    sender, recipient = smtp_calls[0]
+    _sender, recipient = smtp_calls[0]
     assert recipient == "bob@x.com"
     # And only bob should appear in the email_log.
     email_log_coll = firestore._collections.get("email_log")
@@ -649,13 +649,9 @@ async def test_existing_summaries_get_reclassified_on_load(
     latest rules rather than trusting the stale stored value.
     """
     from daily_bot import __main__ as pipeline
-    from daily_bot.config import Settings
-    from datetime import UTC, datetime
 
     test_settings.scrape_concurrency = 1
     test_settings.summarize_concurrency = 1
-
-    today = datetime.now(UTC).strftime("%Y-%m-%d")
 
     # Pre-seed Firestore with a previously-stored article whose category is
     # "other" but whose title now matches a known keyword ("jerusalem" -> world).

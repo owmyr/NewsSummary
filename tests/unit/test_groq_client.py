@@ -33,12 +33,12 @@ def _fake_response() -> httpx.Response:
 
 def _settings(**overrides) -> Settings:
     """Build a Settings instance with a Groq key and minimal required fields."""
-    base = dict(
-        firebase_credentials="{}",
-        sender_email="a@b.c",
-        sender_password="password",
-        groq_api_key="test-groq-key",
-    )
+    base = {
+        "firebase_credentials": "{}",
+        "sender_email": "a@b.c",
+        "sender_password": "password",
+        "groq_api_key": "test-groq-key",
+    }
     base.update(overrides)
     return _NoEnvSettings(**base)  # type: ignore[call-arg]
 
