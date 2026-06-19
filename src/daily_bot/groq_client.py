@@ -69,9 +69,7 @@ class AsyncGroqClient:
                     ],
                 )
                 if not response.choices:
-                    logger.warning(
-                        "Groq returned no choices (attempt %d)", attempt
-                    )
+                    logger.warning("Groq returned no choices (attempt %d)", attempt)
                     return None
                 text = response.choices[0].message.content
                 if text:
@@ -93,8 +91,7 @@ class AsyncGroqClient:
                 status = getattr(exc, "status_code", None)
                 wait = 2 * attempt
                 logger.warning(
-                    "Groq API error (attempt %d/%d, status=%s): %s "
-                    "-- sleeping %.1fs",
+                    "Groq API error (attempt %d/%d, status=%s): %s -- sleeping %.1fs",
                     attempt,
                     self._retries,
                     status,
@@ -109,9 +106,7 @@ class AsyncGroqClient:
                     await asyncio.sleep(2 * attempt)
         return None
 
-    async def generate_many(
-        self, prompts: list[str], concurrency: int
-    ) -> list[str | None]:
+    async def generate_many(self, prompts: list[str], concurrency: int) -> list[str | None]:
         """Generate text for multiple prompts concurrently, bounded by `concurrency`."""
         semaphore = asyncio.Semaphore(concurrency)
 

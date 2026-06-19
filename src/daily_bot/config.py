@@ -18,7 +18,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    google_api_key: str = Field(default="", description="Google Gemini API key (empty = don't use Gemini)")
+    google_api_key: str = Field(
+        default="", description="Google Gemini API key (empty = don't use Gemini)"
+    )
 
     groq_api_key: str = Field(
         default="",

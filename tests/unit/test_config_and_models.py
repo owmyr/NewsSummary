@@ -14,7 +14,13 @@ def test_settings_google_api_key_optional(monkeypatch: pytest.MonkeyPatch, tmp_p
     # user can run the pipeline using only Groq. Other required
     # fields (firebase_credentials, sender_email, sender_password) are
     # still enforced.
-    for var in ("GOOGLE_API_KEY", "GROQ_API_KEY", "FIREBASE_CREDENTIALS", "SENDER_EMAIL", "SENDER_PASSWORD"):
+    for var in (
+        "GOOGLE_API_KEY",
+        "GROQ_API_KEY",
+        "FIREBASE_CREDENTIALS",
+        "SENDER_EMAIL",
+        "SENDER_PASSWORD",
+    ):
         monkeypatch.delenv(var, raising=False)
 
     class NoEnvSettings(Settings):

@@ -65,9 +65,7 @@ class _StubGroqClient:
         self._responses = list(responses or [])
         self._errors = list(errors or [])
         self.calls: list[dict] = []
-        self.chat = SimpleNamespace(
-            completions=SimpleNamespace(create=self._create)
-        )
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
 
     async def _create(self, **kwargs):
         self.calls.append(kwargs)
@@ -189,9 +187,7 @@ async def test_generate_many_runs_all_prompts():
     client = AsyncGroqClient(_settings())
     stub = _StubGroqClient(responses=["one", "two", "three"])
     client._client = stub  # type: ignore[assignment]
-    results = await client.generate_many(
-        ["p1", "p2", "p3"], concurrency=2
-    )
+    results = await client.generate_many(["p1", "p2", "p3"], concurrency=2)
     assert results == ["one", "two", "three"]
 
 

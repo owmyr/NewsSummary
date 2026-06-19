@@ -29,9 +29,7 @@ class LLMClient(Protocol):
         """
         ...
 
-    async def generate_many(
-        self, prompts: list[str], concurrency: int
-    ) -> list[str | None]:
+    async def generate_many(self, prompts: list[str], concurrency: int) -> list[str | None]:
         """Generate text for many prompts, bounded by ``concurrency``.
 
         Returns one result per input prompt, in the same order. ``None``

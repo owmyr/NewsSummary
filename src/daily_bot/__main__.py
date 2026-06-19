@@ -425,9 +425,7 @@ async def run_async(
                     [s.model_dump() for s in existing_summaries],
                 )
             except Exception:
-                logger.exception(
-                    "Failed to persist re-classified summaries; continuing"
-                )
+                logger.exception("Failed to persist re-classified summaries; continuing")
 
         new_summaries: list[Summary] = []
 

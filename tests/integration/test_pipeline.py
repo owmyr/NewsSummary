@@ -692,8 +692,7 @@ async def test_existing_summaries_get_reclassified_on_load(
     saved = last_set_doc._data.get("articles", [])
     assert len(saved) == 1
     assert saved[0]["category"] == "world", (
-        f"Expected re-derived 'world' from 'jerusalem' keyword, got "
-        f"{saved[0]['category']!r}"
+        f"Expected re-derived 'world' from 'jerusalem' keyword, got {saved[0]['category']!r}"
     )
     # And no Gemini call was made (only re-derivation, no re-summarization).
     assert fake_gemini.calls == []
